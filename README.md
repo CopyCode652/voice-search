@@ -1,32 +1,54 @@
 # Voice Search
 
-A desktop voice search launcher written in Python.
+A desktop application that enables voice-activated web searching.
 
-It listens for a wake word or global hotkey, records a spoken query, converts it to text, lets you review it, and opens the selected search engine in your browser.
+## Screenshots
 
-## Features
+### Status Window (Off)
+![Status Window Off](screenshots/status-window-off.png)
 
-- Wake word activation
-- Global hotkey
-- Live microphone level meter
-- Search confirmation window
-- Multiple search destinations
-- Math symbol conversion
-- Cross-platform Python implementation
+### Status Window (On)
+![Status Window On](screenshots/status-window-on.png)
 
-## Requirements
+### Confirm Window
+![Confirm Window](screenshots/confirm-window.png)
 
-- Python 3.11+
-- PyAudio
-- NumPy
-- SpeechRecognition
-- OpenWakeWord
-- pynput
+## Prerequisites
+
+- Python 3.7 or higher
+- pip (Python package installer)
+- A working microphone
 
 ## Installation
 
-```bash
-git clone https://github.com/username/voice-search.git
-cd voice-search
-pip install -r requirements.txt
-python voice_search.py
+1. Clone the repository:
+   git clone https://github.com/CopyCode652/voice-search.git
+   cd voice-search
+
+2. Create and activate a virtual environment:
+   python3 -m venv venv
+   source venv/bin/activate
+   (On Windows, use: venv\Scripts\activate)
+
+3. Install dependencies:
+   pip install -r requirements.txt
+
+## Usage
+
+Run the application using the provided shell script:
+   ./run.sh
+
+Alternatively, run the Python script directly:
+   python voice_search.py
+
+## Project Structure
+
+.
+├── README.md
+├── requirements.txt
+├── run.sh
+├── screenshots/
+│   ├── confirm-window.png
+│   ├── status-window-off.png
+│   └── status-window-on.png
+└── voice_search.py
