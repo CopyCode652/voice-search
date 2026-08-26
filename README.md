@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=flat)](#prerequisites)
 [![Wake Word](https://img.shields.io/badge/Wake%20Word-openWakeWord-4CAF50?style=flat)](#how-it-works)
 [![GUI](https://img.shields.io/badge/GUI-Tkinter-FF9800?style=flat)](#tech-stack)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat)](LICENSE)
+
 
 A small desktop voice-to-search launcher written in Python.
 
