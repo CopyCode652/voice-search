@@ -1,16 +1,15 @@
 # Voice Search Launcher
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat\&logo=python\&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey?style=flat)](#prerequisites)
 [![Wake Word](https://img.shields.io/badge/Wake%20Word-openWakeWord-4CAF50?style=flat)](#how-it-works)
 [![GUI](https://img.shields.io/badge/GUI-Tkinter-FF9800?style=flat)](#tech-stack)
 
+A small desktop voice-to-search and app-launcher, written in Python.
 
-A small desktop voice-to-search launcher written in Python.
+Say **"Alexa"** or press **Ctrl + Shift + `**, speak a search query, review the transcription, and open the search in your preferred destination. You can also say **"open \<app name\>"** to launch a local application instead.
 
-Say **"Alexa"** or press **Ctrl + Shift + `**, speak a search query, review the transcription, and open the search in your preferred destination.
-
-> **Speak → Review → Search.**
+> **Speak → Review → Search (or launch).**
 >
 > That's pretty much the whole idea.
 
@@ -50,25 +49,37 @@ Constructive feedback is very welcome.
 
 ![Confirm search window](screenshots/confirm-window.png)
 
+### Settings
+
+![Settings window](screenshots/settings.png)
+
+### Search History
+
+![History window](screenshots/history.png)
+
 ---
 
 ## Features
 
-* **Wake-word activation** using `openWakeWord`
-* **Global hotkey activation** with `pynput`
-* **Local microphone capture** using PyAudio
-* **Speech transcription** using Google Web Speech through `SpeechRecognition`
-* **Editable transcription** before searching
-* **Silence timeout** when no speech is detected
-* **Audio level meter** while recording
-* **Activation and deactivation sounds**
-* **Multiple search destinations**
-* **Spoken mathematical notation conversion**
-* **Destination aliases** designed for natural speech
-* **Background transcription** so the GUI remains responsive
-* **Thread-safe recording state**
-* **Explicit audio-boundary checks** around recording sessions
-* **Timestamped runtime logging**
+- **Wake-word activation** using `openWakeWord`
+- **Global hotkey activation** with `pynput`
+- **Local microphone capture** using PyAudio
+- **Speech transcription** using Google Web Speech through `SpeechRecognition`
+- **Editable transcription** before searching, in a command-palette style confirm window
+- **Voice-launchable local applications** — say "open \<app name\>" instead of searching
+- **Silence timeout** when no speech is detected
+- **Audio level meter** while recording
+- **Activation and deactivation sounds**, with multiple selectable tone themes
+- **Multiple search destinations**
+- **Spoken mathematical notation conversion**
+- **Destination aliases** designed for natural speech
+- **Search history**, with a searchable/filterable log of past queries
+- **Dark and light interface themes**, applied consistently across every window
+- **Configurable settings window** (wake word, window size, sensitivity, hotkey, and more) — no need to edit the source
+- **Background transcription** so the GUI remains responsive
+- **Thread-safe recording state**
+- **Explicit audio-boundary checks** around recording sessions
+- **Timestamped runtime logging**
 
 ---
 
@@ -83,25 +94,35 @@ Once activated, the application starts buffering microphone audio.
 
 You can then speak a query such as:
 
-```text
+```
 google python decorators
 ```
 
 or:
 
-```text
+```
 youtube how to learn C++
 ```
 
 or:
 
-```text
+```
 desmos x squared plus y squared equals 25
+```
+
+or launch a local application instead of searching:
+
+```
+open visual studio code
+```
+
+```
+open obsidian
 ```
 
 When recording stops, the captured audio is sent to Google's speech-recognition service for transcription.
 
-The resulting text is displayed in a confirmation window where you can edit it before clicking **Go**.
+If the transcript matches an "open \<app\>" phrase and app launching is enabled, the application is launched directly and no search happens. Otherwise, the resulting text is displayed in a confirmation window where you can edit it before clicking **Go**.
 
 No magic. No giant AI framework. Just a microphone, some Python, several threads, and the occasional bug.
 
@@ -111,51 +132,53 @@ No magic. No giant AI framework. Just a microphone, some Python, several threads
 
 The application is split into a few simple stages:
 
-```text
-                 ┌──────────────────┐
-                 │    Microphone    │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                 ┌──────────────────┐
-                 │     PyAudio      │
-                 │   16 kHz / PCM   │
-                 └────────┬─────────┘
-                          │
-             ┌────────────┴────────────┐
-             │                         │
-             ▼                         ▼
-    ┌─────────────────┐       ┌─────────────────┐
-    │  openWakeWord   │       │  Active session │
-    │  local detection│       │  audio buffer   │
-    └────────┬────────┘       └────────┬────────┘
-             │                         │
-             │ activate                │ deactivate
-             └────────────┬────────────┘
-                          ▼
-                 ┌──────────────────┐
-                 │ SpeechRecognition│
-                 │ / Google Web     │
-                 │ Speech           │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                 ┌──────────────────┐
-                 │ Transcript +     │
-                 │ math processing  │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                 ┌──────────────────┐
-                 │ Confirmation     │
-                 │ Window           │
-                 └────────┬─────────┘
-                          │
-                          ▼
-                 ┌──────────────────┐
-                 │   Web Browser    │
-                 │ Search Destination│
-                 └──────────────────┘
+```
+             ┌──────────────────┐
+             │    Microphone    │
+             └────────┬─────────┘
+                      │
+                      ▼
+             ┌──────────────────┐
+             │     PyAudio      │
+             │   16 kHz / PCM   │
+             └────────┬─────────┘
+                      │
+         ┌────────────┴────────────┐
+         │                         │
+         ▼                         ▼
+┌─────────────────┐       ┌─────────────────┐
+│  openWakeWord   │       │  Active session │
+│  local detection│       │  audio buffer   │
+└────────┬────────┘       └────────┬────────┘
+         │                         │
+         │ activate                │ deactivate
+         └────────────┬────────────┘
+                      ▼
+             ┌──────────────────┐
+             │ SpeechRecognition│
+             │ / Google Web     │
+             │ Speech           │
+             └────────┬─────────┘
+                      │
+                      ▼
+             ┌──────────────────┐
+             │ Transcript +     │
+             │ math processing  │
+             └────────┬─────────┘
+                      │
+             ┌────────┴─────────┐
+             │                  │
+             ▼                  ▼
+   ┌──────────────────┐ ┌──────────────────┐
+   │ "open <app>"     │ │ Confirmation     │
+   │ → App Launcher   │ │ Window           │
+   └──────────────────┘ └────────┬─────────┘
+                                 │
+                                 ▼
+                        ┌───────────────────┐
+                        │   Web Browser     │
+                        │ Search Destination│
+                        └───────────────────┘
 ```
 
 The wake-word detection happens locally through `openWakeWord`.
@@ -182,12 +205,12 @@ When the session is deactivated:
 
 The code also performs explicit runtime checks after deactivation to verify:
 
-```text
+```
 is_active == False
 recorded_frames == []
 ```
 
-This is intentional rather than relying on Python's `assert` statement.
+This is intentional rather than relying on Python's `assert` statement, and the check is performed against a snapshot of the state taken while the lock protecting it is still held, so the verification is accurate even under concurrent access.
 
 The application also logs capture, hand-off, and transcription events with timestamps.
 
@@ -226,33 +249,78 @@ Queries can optionally start with a destination keyword.
 | All About Circuits         | `all about circuits transistor`       |
 | Engineering Toolbox        | `engineering toolbox reynolds number` |
 
+This is a representative sample — the full list is considerably longer and covers electronics, EDA, PCB manufacturing, datasheets, and academic/research destinations as well. The complete, up-to-date list lives in `SEARCH_URLS` and `DESTINATION_ALIASES` in the source.
+
 If no destination is specified, **Google** is used.
 
 ### Examples
 
-```text
+```
 python list comprehensions
 ```
 
 Searches Google.
 
-```text
+```
 youtube python tkinter tutorial
 ```
 
 Searches YouTube.
 
-```text
+```
 github open source voice assistant
 ```
 
 Searches GitHub.
 
-```text
+```
 wikipedia Nikola Tesla
 ```
 
 Searches Wikipedia.
+
+---
+
+## Voice-Launchable Applications
+
+Instead of searching, you can say "open", "launch", "start", "run", or "fire up" followed by an app name, and the application will attempt to launch it locally rather than opening a browser.
+
+```
+open visual studio code
+```
+
+```
+open the file manager
+```
+
+```
+launch obsidian
+```
+
+```
+fire up spotify
+```
+
+Small filler words such as "the", "a", "an", "my", and "up" are stripped automatically, so natural phrasing like "open up obsidian" or "open the file manager" resolves correctly.
+
+Applications are grouped into categories:
+
+| Category            | Examples                                                  |
+| -------------------- | --------------------------------------------------------- |
+| Development           | VS Code, PyCharm, IntelliJ, Docker, GitHub Desktop, Terminal |
+| Design & Media        | GIMP, Inkscape, Blender, Figma, OBS Studio, Spotify        |
+| Office & Notes        | Obsidian, Notion, LibreOffice, Microsoft Office, Anki      |
+| Engineering & EDA     | KiCad, LTspice, FreeCAD, Fritzing, MATLAB, Octave          |
+| Communication         | Discord, Slack, Telegram, Zoom, Microsoft Teams            |
+| Browsers              | Firefox, Chrome/Chromium, Brave, Edge, Opera               |
+| System & Utilities    | VirtualBox, System Settings, Task Manager, Screenshot Tool |
+| Science & Math        | GeoGebra                                                   |
+
+The full, current list of supported applications and their spoken aliases is visible from within the app itself, under **Settings → Voice Apps**, or in `app_catalog.py` in the source.
+
+An application will only launch if it is actually installed on your system — the launcher tries a short list of known executable names/paths per app and uses whichever one it finds first.
+
+This feature can be turned off from the settings window if you'd rather every phrase be treated as a search.
 
 ---
 
@@ -263,24 +331,24 @@ The application includes a lightweight speech-to-math conversion layer before th
 For example:
 
 | Spoken phrase              | Converted form |
-| -------------------------- | -------------- |
-| `x squared`                | `x²`           |
-| `x cubed`                  | `x³`           |
-| `x power five`             | `x^5`          |
-| `x to the fifth power`     | `x^5`          |
-| `a over b`                 | `a/b`          |
-| `square root of x`         | `√x`           |
-| `integral of f x`          | `∫ f x`        |
-| `derivative of x squared`  | `d/dx x²`      |
-| `greater than or equal to` | `≥`            |
-| `less than or equal to`    | `≤`            |
-| `not equal to`             | `≠`            |
-| `plus or minus`            | `±`            |
-| `infinity`                 | `∞`            |
-| `theta`                    | `θ`            |
-| `alpha`                    | `α`            |
-| `pi`                       | `π`            |
-| `ohm`                      | `Ω`            |
+| --------------------------- | --------------- |
+| `x squared`                 | `x²`            |
+| `x cubed`                   | `x³`            |
+| `x power five`              | `x^5`           |
+| `x to the fifth power`      | `x^5`           |
+| `a over b`                  | `a/b`           |
+| `square root of x`          | `√x`            |
+| `integral of f x`           | `∫ f x`         |
+| `derivative of x squared`   | `d/dx x²`       |
+| `greater than or equal to`  | `≥`             |
+| `less than or equal to`     | `≤`             |
+| `not equal to`               | `≠`             |
+| `plus or minus`              | `±`             |
+| `infinity`                   | `∞`             |
+| `theta`                      | `θ`             |
+| `alpha`                      | `α`             |
+| `pi`                         | `π`             |
+| `ohm`                        | `Ω`             |
 
 The confirmation window lets you correct the result before it is opened in the browser.
 
@@ -294,8 +362,8 @@ In other words, it is not going to win a Fields Medal anytime soon.
 
 ### 1. Start the application
 
-```bash
-python voice_search.py
+```
+python voice_launcher.py
 ```
 
 The application starts in the background and displays the status window.
@@ -304,22 +372,28 @@ The application starts in the background and displays the status window.
 
 Either say:
 
-```text
+```
 Alexa
 ```
 
 or press:
 
-```text
+```
 Ctrl + Shift + `
 ```
 
-### 3. Speak your query
+### 3. Speak your query — or an app name
 
 For example:
 
-```text
+```
 youtube how does a python generator work
+```
+
+or:
+
+```
+open obsidian
 ```
 
 ### 4. Stop recording
@@ -328,17 +402,17 @@ You can stop with the same wake word or hotkey.
 
 If you stop speaking for the configured timeout period, the session is automatically stopped.
 
-### 5. Review the transcript
+### 5. Review the transcript (search only)
 
-The confirmation window shows the processed query.
+If the phrase wasn't recognized as an app command, the confirmation window shows the processed query.
 
 Edit anything that was transcribed incorrectly.
 
-### 6. Search
+### 6. Search, or let it launch
 
-Click **Go**.
+Click **Go** to search, or press **Enter**. Press **Escape** to cancel.
 
-The application opens the selected destination in your default browser.
+If an app command was recognized instead, the application launches immediately and a small notification confirms it.
 
 ---
 
@@ -350,13 +424,13 @@ Python 3.11 or newer is recommended.
 
 Check your version:
 
-```bash
+```
 python --version
 ```
 
 or:
 
-```bash
+```
 python3 --version
 ```
 
@@ -366,9 +440,9 @@ A working microphone is required.
 
 The application expects:
 
-* Mono audio
-* 16-bit PCM
-* 16 kHz sample rate
+- Mono audio
+- 16-bit PCM
+- 16 kHz sample rate
 
 ### Internet Connection
 
@@ -388,103 +462,165 @@ On Linux, PortAudio development packages may be required when installing PyAudio
 
 ### 1. Clone the repository
 
-```bash
-git clone https://github.com/YOUR_USERNAME/voice-search-launcher.git
-cd voice-search-launcher
 ```
-
-Replace `YOUR_USERNAME` with your GitHub username.
+git clone https://github.com/CopyCode652/voice-search.git
+cd voice-search
+```
 
 ### 2. Create a virtual environment
 
 #### Linux / macOS
 
-```bash
+```
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
 #### Windows
 
-```powershell
+```
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
 ### 3. Install dependencies
 
-```bash
+```
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
 If you don't have a `requirements.txt` yet, the dependencies are:
 
-```bash
-pip install numpy pyaudio SpeechRecognition openwakeword pynput
 ```
-
-### Linux / Debian / Ubuntu
-
-If PyAudio cannot find PortAudio:
-
-```bash
-sudo apt install portaudio19-dev python3-dev
-```
-
-Then:
-
-```bash
-pip install pyaudio
-```
-
-### Arch Linux
-
-```bash
-sudo pacman -S portaudio python
-```
-
-Then install the Python dependencies inside the virtual environment:
-
-```bash
-pip install numpy pyaudio SpeechRecognition openwakeword pynput
-```
-
-### Windows
-
-In most cases:
-
-```powershell
-pip install numpy pyaudio SpeechRecognition openwakeword pynput
-```
-
-### macOS
-
-Install PortAudio first:
-
-```bash
-brew install portaudio
-```
-
-Then:
-
-```bash
 pip install numpy pyaudio SpeechRecognition openwakeword pynput
 ```
 
 ---
 
+## Setup Guide by Platform
+
+The core Python dependencies are the same everywhere. What differs between platforms is mainly how PortAudio (required by PyAudio) gets installed, and a couple of packaging quirks.
+
+### Ubuntu / Debian
+
+Install the system packages PyAudio needs to build against, plus Tkinter (which isn't bundled with Python on Debian-based systems):
+
+```
+sudo apt update
+sudo apt install portaudio19-dev python3-dev python3-tk python3-venv
+```
+
+Then set up the project as usual:
+
+```
+git clone https://github.com/CopyCode652/voice-search.git
+cd voice-search
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+python voice_launcher.py
+```
+
+If `pip install pyaudio` still fails after installing `portaudio19-dev`, try reinstalling just that package:
+
+```
+pip install --no-cache-dir --force-reinstall pyaudio
+```
+
+### Arch Linux
+
+Install PortAudio, Python, and Tkinter through `pacman`:
+
+```
+sudo pacman -S portaudio python python-pip tk
+```
+
+Then set up the project the same way:
+
+```
+git clone https://github.com/CopyCode652/voice-search.git
+cd voice-search
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install numpy pyaudio SpeechRecognition openwakeword pynput
+python voice_launcher.py
+```
+
+If you're on a minimal Arch install and PyAudio fails to build, double-check that `base-devel` is installed, since it provides the compiler toolchain PyAudio's build step needs:
+
+```
+sudo pacman -S base-devel
+```
+
+### Other Linux distributions
+
+The general pattern is the same regardless of distribution:
+
+1. Install a PortAudio development package through your package manager (names vary — look for `portaudio` or `portaudio19-dev`).
+2. Install a Tkinter package if it isn't bundled with your Python installation (often named `python3-tk` or similar).
+3. Create a virtual environment and `pip install -r requirements.txt` as shown above.
+
+### Windows
+
+Python on Windows ships with Tkinter and prebuilt PyAudio wheels are normally available, so no separate PortAudio installation step is required in most cases.
+
+```
+git clone https://github.com/CopyCode652/voice-search.git
+cd voice-search
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python voice_launcher.py
+```
+
+If `pip install pyaudio` fails to find a prebuilt wheel for your Python version, installing it from a known wheel source (such as [Christoph Gohlke's unofficial Windows binaries](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio)) or via `pipwin` is a common workaround:
+
+```
+pip install pipwin
+pipwin install pyaudio
+```
+
+The global hotkey and the "open \<app\>" voice command both rely on being able to find installed applications on `PATH`, or at one of the common Windows install locations the launcher already checks. If an app doesn't launch, see [Voice-Launchable Applications](#voice-launchable-applications).
+
+### macOS
+
+Install PortAudio first:
+
+```
+brew install portaudio
+```
+
+Then:
+
+```
+git clone https://github.com/CopyCode652/voice-search.git
+cd voice-search
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+python voice_launcher.py
+```
+
+macOS may prompt for microphone and accessibility permissions the first time the application runs (the latter is needed for the global hotkey to work); grant both when asked.
+
+---
+
 ## Running the Application
 
-```bash
-python voice_search.py
+```
+python voice_launcher.py
 ```
 
 You should see the status window.
 
 To stop the application, use the **Quit** button or press:
 
-```text
+```
 Ctrl + C
 ```
 
@@ -492,44 +628,56 @@ Ctrl + C
 
 ## Project Structure
 
-```text
-voice-search-launcher/
+```
+voice-search/
 │
-├── voice_search.py
+├── voice_launcher.py
+├── theme.py
+├── app_catalog.py
 ├── README.md
-├── LICENSE
+├── CHANGELOG.md
 ├── requirements.txt
+├── run.sh
 │
 └── screenshots/
     ├── confirm-window.png
+    ├── history.png
+    ├── settings.png
     ├── status-window-off.png
     └── status-window-on.png
 ```
 
-### `voice_search.py`
+### `voice_launcher.py`
 
-Contains the complete application:
+The main entry point and the bulk of the application logic:
 
-* audio capture
-* wake-word detection
-* global hotkey handling
-* recording state management
-* silence detection
-* speech recognition
-* mathematical substitutions
-* destination parsing
-* search URL generation
-* Tkinter interface
+- audio capture
+- wake-word detection
+- global hotkey handling
+- recording state management
+- silence detection
+- speech recognition
+- mathematical substitutions
+- destination parsing
+- search URL generation
+- app-command parsing and launching
+- settings and history persistence
+- the Tkinter windows (status bar, confirm popup, history, settings, toasts)
 
-### `screenshots/`
+### `theme.py`
 
-Contains screenshots displayed in this README.
+A small, shared design system used by every window in the application — colors, fonts, spacing, and a handful of reusable themed widgets (buttons, cards, toggle switches). This keeps the status bar, confirm popup, settings window, history window, and toasts visually consistent, and makes it possible to switch between the dark and light interface themes cleanly.
+
+### `app_catalog.py`
+
+The catalog of applications that can be launched by voice — their display names, categories, icons, and the executable names/paths the launcher tries for each one, along with the spoken aliases mapped to each app.
+
 
 ### `requirements.txt`
 
 Recommended dependency list:
 
-```text
+```
 numpy
 pyaudio
 SpeechRecognition
@@ -541,15 +689,15 @@ pynput
 
 ## Use Cases
 
-This application is primarily designed for situations where you want to search for something quickly without switching to a browser and typing the query manually.
+This application is primarily designed for situations where you want to search for something — or launch an application — quickly, without switching to a browser or hunting through a start menu.
 
 ### Quick Web Searches
 
-```text
+```
 python dictionary comprehension
 ```
 
-```text
+```
 wikipedia Ada Lovelace
 ```
 
@@ -557,24 +705,23 @@ Useful when you just need to look something up quickly.
 
 ---
 
-
 ### Education and Study
 
 The launcher can also be used while studying.
 
-```text
+```
 khan academy differential equations
 ```
 
-```text
+```
 mit ocw linear algebra
 ```
 
-```text
+```
 coursera machine learning
 ```
 
-```text
+```
 pauls notes vector calculus
 ```
 
@@ -586,18 +733,19 @@ Voice input can be useful when your hands are occupied.
 
 For example:
 
-* working at an electronics bench
-* following a programming tutorial
-* studying mathematics
-* checking component information
-* looking up documentation while coding
-* quickly searching technical references
+- working at an electronics bench
+- following a programming tutorial
+- studying mathematics
+- checking component information
+- looking up documentation while coding
+- quickly searching technical references
+- opening a tool you need without leaving what you're doing
 
 ---
 
 ### Accessibility
 
-Voice input can provide an alternative to conventional keyboard-based searching for users who find typing inconvenient.
+Voice input can provide an alternative to conventional keyboard-based searching and application launching for users who find typing or navigating menus inconvenient.
 
 ---
 
@@ -615,7 +763,7 @@ The application reads microphone audio continuously so it can detect the configu
 
 After a recording session is stopped, the captured session audio is passed to:
 
-```text
+```
 SpeechRecognition
         ↓
 Google Web Speech recognition
@@ -629,61 +777,72 @@ The recording buffer is only appended to while the application is in an active s
 
 If completely offline transcription is required, the transcription backend could be replaced with a local speech-recognition engine such as Vosk or another offline solution.
 
+### Local Application Launching
+
+The "open \<app\>" feature only runs commands from a fixed, built-in catalog (`app_catalog.py`) — it does not execute arbitrary transcribed text as a shell command. If the transcript doesn't match a known app phrase, it's treated as a search query instead. This feature can be disabled entirely from the settings window.
+
 ---
 
 ## Configuration
 
-Most behavior can be adjusted near the top of `voice_search.py`.
+Most behavior can now be adjusted directly from the **Settings** window — wake word, window size, interface theme, tone theme, default search destination, auto-search, clipboard auto-copy, app-launch toggle, speech recognition language, microphone selection, wake sensitivity, silence timeout, mic amplitude threshold, hotkey, and history size — without touching the source.
 
-For example:
+Settings are saved automatically to:
+
+```
+~/.voice_search_launcher/settings.json
+```
+
+Search history is saved to:
+
+```
+~/.voice_search_launcher/history.json
+```
+
+A few defaults are still defined near the top of `voice_launcher.py` if you prefer to change them at the source level, for example:
 
 ```python
-WAKE_THRESHOLD = 0.5
-TOGGLE_COOLDOWN_SEC = 1.5
-SILENCE_TIMEOUT_SEC = 8.0
-SILENCE_AMPLITUDE_THRESHOLD = 300
-MIN_SESSION_DURATION_SEC = 0.3
+DEFAULT_SETTINGS = {
+    "wake_word": "alexa",
+    "wake_threshold": 0.5,
+    "silence_timeout_sec": 8.0,
+    "silence_amplitude_threshold": 300,
+    ...
+}
 ```
 
 ### Wake-Word Threshold
 
-```python
-WAKE_THRESHOLD = 0.5
+```
+wake_threshold = 0.5
 ```
 
-Controls how confident `openWakeWord` needs to be before triggering.
+Controls how confident `openWakeWord` needs to be before triggering. Adjustable from Settings → Advanced.
 
 ### Silence Timeout
 
-```python
-SILENCE_TIMEOUT_SEC = 8.0
+```
+silence_timeout_sec = 8.0
 ```
 
-Controls how long the application waits without detecting significant audio before automatically ending the session.
-
-### Minimum Session Duration
-
-```python
-MIN_SESSION_DURATION_SEC = 0.3
-```
-
-Very short recordings are discarded rather than sent for transcription.
+Controls how long the application waits without detecting significant audio before automatically ending the session. Adjustable from Settings → Advanced.
 
 ---
 
 ## Tech Stack
 
 | Component         | Purpose                              |
-| ----------------- | ------------------------------------ |
-| Python            | Application logic                    |
-| Tkinter           | Desktop GUI                          |
-| PyAudio           | Microphone/audio I/O                 |
-| NumPy             | Audio processing and RMS calculation |
-| openWakeWord      | Local wake-word detection            |
-| SpeechRecognition | Speech recognition interface         |
-| Google Web Speech | Cloud transcription                  |
-| pynput            | Global keyboard hotkey               |
-| webbrowser        | Opening search results               |
+| ------------------ | ------------------------------------- |
+| Python             | Application logic                     |
+| Tkinter            | Desktop GUI                           |
+| PyAudio            | Microphone/audio I/O                  |
+| NumPy              | Audio processing and RMS calculation  |
+| openWakeWord       | Local wake-word detection             |
+| SpeechRecognition  | Speech recognition interface          |
+| Google Web Speech  | Cloud transcription                   |
+| pynput             | Global keyboard hotkey                |
+| webbrowser         | Opening search results                |
+| subprocess         | Launching local applications by voice |
 
 ---
 
@@ -695,7 +854,7 @@ There is no server, database, account system, or custom backend.
 
 The main components communicate through a queue and background threads:
 
-```text
+```
 AudioWorker
      │
      ├── microphone capture
@@ -713,6 +872,8 @@ AudioWorker
 
 Tkinter GUI operations remain on the main thread while audio processing and transcription run in background threads.
 
+Every window shares one design system defined in `theme.py`, so switching between the dark and light interface themes updates the status bar, confirm popup, settings window, history window, and toasts consistently, rather than each window keeping its own colors.
+
 ---
 
 ## Known Limitations
@@ -721,43 +882,20 @@ This project is still under development.
 
 Some known limitations include:
 
-* Google Web Speech recognition requires an internet connection.
-* Transcription quality depends on the speech-recognition service and microphone quality.
-* Wake-word detection can produce false positives or false negatives.
-* The mathematical conversion system is rule-based and does not understand arbitrary mathematical grammar.
-* The current wake word is the pretrained `Alexa` model.
-* Search destinations are currently configured directly in the Python source.
-* Linux audio setup may require PortAudio system packages.
-* Global hotkey behavior can vary depending on the desktop environment and operating system.
-* There are currently limited automated tests.
-* There may be bugs that I haven't discovered yet.
+- Google Web Speech recognition requires an internet connection.
+- Transcription quality depends on the speech-recognition service and microphone quality.
+- Wake-word detection can produce false positives or false negatives.
+- The mathematical conversion system is rule-based and does not understand arbitrary mathematical grammar.
+- The current wake word options are limited to the pretrained models `openWakeWord` ships with.
+- The "open \<app\>" feature can only launch applications already known to `app_catalog.py`, and only if they're actually installed on the machine.
+- Linux audio setup may require PortAudio system packages, and Tkinter may need to be installed separately depending on the distribution.
+- Global hotkey behavior can vary depending on the desktop environment and operating system.
+- There are currently limited automated tests.
+- There may be bugs that I haven't discovered yet.
 
 That last one is not a disclaimer.
 
 It's a promise.
-
----
-
-## Future Improvements
-
-Some possible directions for the project:
-
-* [ ] Local speech recognition using Vosk or another offline engine
-* [ ] Additional wake words
-* [ ] User-configurable wake word
-* [ ] Configurable hotkeys
-* [ ] Settings window
-* [ ] Custom search destinations
-* [ ] Better mathematical expression parsing
-* [ ] More robust speech cleanup
-* [ ] Search history
-* [ ] Optional clipboard integration
-* [ ] System tray support
-* [ ] Better audio-device selection
-* [ ] Windows/macOS/Linux packaging
-* [ ] Automated tests
-* [ ] CI workflow
-* [ ] Configuration file instead of hard-coded settings
 
 ---
 
@@ -773,19 +911,20 @@ If you know how to make something cleaner, safer, faster, more portable, or simp
 
 You can help with:
 
-* bug fixes
-* code cleanup
-* performance improvements
-* audio handling
-* wake-word detection
-* speech recognition
-* mathematical parsing
-* new search destinations
-* GUI improvements
-* documentation
-* tests
-* Linux/Windows/macOS compatibility
-* packaging and distribution
+- bug fixes
+- code cleanup
+- performance improvements
+- audio handling
+- wake-word detection
+- speech recognition
+- mathematical parsing
+- new search destinations
+- new voice-launchable applications
+- GUI improvements
+- documentation
+- tests
+- Linux/Windows/macOS compatibility
+- packaging and distribution
 
 ### Getting Started
 
@@ -793,7 +932,7 @@ You can help with:
 2. Clone your fork.
 3. Create a branch:
 
-```bash
+```
 git checkout -b feature/my-improvement
 ```
 
@@ -801,14 +940,14 @@ git checkout -b feature/my-improvement
 5. Test the application.
 6. Commit your changes:
 
-```bash
+```
 git add .
 git commit -m "Add my improvement"
 ```
 
 7. Push the branch:
 
-```bash
+```
 git push origin feature/my-improvement
 ```
 
@@ -824,16 +963,16 @@ If you find a bug, please open an issue.
 
 Include:
 
-* Operating system
-* Python version
-* Microphone/audio setup
-* Installation method
-* Error message or traceback
-* Steps to reproduce the problem
+- Operating system
+- Python version
+- Microphone/audio setup
+- Installation method
+- Error message or traceback
+- Steps to reproduce the problem
 
 For example:
 
-```text
+```
 OS: Arch Linux
 Python: 3.11
 Audio: USB microphone
@@ -842,7 +981,7 @@ Problem:
 Wake word does not trigger.
 
 Steps:
-1. Start voice_search.py
+1. Start voice_launcher.py
 2. Say "Alexa"
 3. Nothing happens
 ```
@@ -855,10 +994,10 @@ Please don't upload private recordings or other sensitive information when repor
 
 This project uses:
 
-* [openWakeWord](https://github.com/dscripka/openWakeWord) — local wake-word detection
-* [SpeechRecognition](https://github.com/Uberi/speech_recognition) — speech-recognition interface
-* [PyAudio](https://github.com/CristiFati/pyaudio) — audio input/output
-* [pynput](https://github.com/moses-palmer/pynput) — global keyboard input
+- [openWakeWord](https://github.com/dscripka/openWakeWord) — local wake-word detection
+- [SpeechRecognition](https://github.com/Uberi/speech_recognition) — speech-recognition interface
+- [PyAudio](https://github.com/CristiFati/pyaudio) — audio input/output
+- [pynput](https://github.com/moses-palmer/pynput) — global keyboard input
 
 A big thanks to the developers and maintainers of these projects.
 
@@ -870,9 +1009,11 @@ There are plenty of full-featured voice assistants.
 
 This project takes a much smaller approach.
 
-It is focused on one task:
+It is focused on two tasks:
 
 > **Speak a query → review it → search.**
+>
+> **Say an app name → launch it.**
 
 No assistant personality.
 
@@ -882,9 +1023,9 @@ No custom backend.
 
 No attempt to replace your desktop assistant.
 
-Just a small Python application that lets you use your voice to start a search.
+Just a small Python application that lets you use your voice to start a search or open something you need.
 
-And, apparently, a surprisingly large amount of code is required to make a microphone say "hello, I would like to Google this thing."
+And, apparently, a surprisingly large amount of code is required to make a microphone say "hello, I would like to Google this thing" — or open Obsidian.
 
 ---
 
