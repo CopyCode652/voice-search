@@ -79,7 +79,7 @@ class Theme:
 
 
 DARK_TOKENS = {
-    "bg": "#15161a",            # app background
+    "bg": "#111217",            # app background (slightly deeper for more contrast with cards)
     "bg_elevated": "#1c1e24",   # cards / panels
     "bg_elevated_2": "#22242b", # nested panels / inputs
     "bg_hover": "#2a2d36",
@@ -90,17 +90,21 @@ DARK_TOKENS = {
     "fg_faint": "#5f6470",
     "accent": "#7c8cff",        # indigo accent (buttons, active states)
     "accent_hover": "#8f9dff",
+    "accent_press": "#6a79e6",  # pressed state -- distinct from hover, not just a re-use
+    "accent_soft": "#2a2c58",   # low-opacity-look accent fill for subtle highlights/selection
     "accent_fg": "#0d0e12",
     "success": "#3ddc97",
     "warning": "#f5b942",
     "danger": "#ff6b6b",
     "danger_hover": "#ff8787",
+    "danger_press": "#e65a5a",
     "meter_low": "#3ddc97",
     "meter_mid": "#f5b942",
     "meter_high": "#ff6b6b",
     "meter_off": "#2a2d36",
     "scrollbar": "#3c4049",
     "shadow": "#000000",
+    "shadow_soft": "#0a0a0d",   # elevation ring around floating cards (StatusWindow/ConfirmWindow)
 }
 
 LIGHT_TOKENS = {
@@ -115,17 +119,21 @@ LIGHT_TOKENS = {
     "fg_faint": "#8b8f9c",
     "accent": "#5a67f2",
     "accent_hover": "#4a56e0",
+    "accent_press": "#3d48c9",
+    "accent_soft": "#e4e6fd",
     "accent_fg": "#ffffff",
     "success": "#1f9d6f",
     "warning": "#b8790f",
     "danger": "#d64545",
     "danger_hover": "#c23a3a",
+    "danger_press": "#a83030",
     "meter_low": "#1f9d6f",
     "meter_mid": "#b8790f",
     "meter_high": "#d64545",
     "meter_off": "#e0e2e8",
     "scrollbar": "#c7cbd6",
     "shadow": "#9aa0ab",
+    "shadow_soft": "#c3c7d1",
 }
 
 
@@ -281,13 +289,13 @@ class PillButton(tk.Canvas):
     def _resolve_colors(self, kind):
         t = self._theme
         if kind == "primary":
-            return {"fill": t.accent, "hover": t.accent_hover, "fg": t.accent_fg, "border": None}
+            return {"fill": t.accent, "hover": t.accent_hover, "press": t.accent_press, "fg": t.accent_fg, "border": None}
         if kind == "danger":
-            return {"fill": t.danger, "hover": t.danger_hover, "fg": "#ffffff", "border": None}
+            return {"fill": t.danger, "hover": t.danger_hover, "press": t.danger_press, "fg": "#ffffff", "border": None}
         if kind == "ghost":
-            return {"fill": t.bg_elevated, "hover": t.bg_hover, "fg": t.fg_muted, "border": t.border}
+            return {"fill": t.bg_elevated, "hover": t.bg_hover, "press": t.bg_hover, "fg": t.fg_muted, "border": t.border}
         # secondary (default)
-        return {"fill": t.bg_elevated_2, "hover": t.bg_hover, "fg": t.fg, "border": t.border}
+        return {"fill": t.bg_elevated_2, "hover": t.bg_hover, "press": t.border, "fg": t.fg, "border": t.border}
 
     def set_enabled(self, enabled):
         self._enabled = enabled
@@ -327,11 +335,19 @@ class PillButton(tk.Canvas):
         w = self.winfo_width() or int(self.cget("width"))
         h = self.winfo_height() or int(self.cget("height"))
         c = self._colors
-        fill = c["hover"] if (self._hover or self._pressed) and self._enabled else c["fill"]
         if not self._enabled:
             fill = self._theme.bg_elevated_2
+        elif self._pressed:
+            fill = c.get("press", c["hover"])
+        elif self._hover:
+            fill = c["hover"]
+        else:
+            fill = c["fill"]
+        # Pressed state insets by 1px on each side -- a small tactile "settle"
+        # instead of an instant flat color swap, so clicks feel acknowledged.
+        inset = 1 if (self._pressed and self._enabled) else 0
         r = min(Theme.ROUND_SM + 2, h // 2)
-        self._round_rect(1, 1, max(w - 1, 2), max(h - 1, 2), r, fill=fill,
+        self._round_rect(1 + inset, 1 + inset, max(w - 1 - inset, 2), max(h - 1 - inset, 2), r, fill=fill,
                           outline=(c["border"] or fill), width=1 if c["border"] else 0)
         fg = c["fg"] if self._enabled else self._theme.fg_faint
         label = f"{self._icon}  {self._text}" if self._icon else self._text
@@ -358,6 +374,73 @@ class Card(tk.Frame):
                           bd=0, **kwargs)
         self._inner = tk.Frame(self, bg=theme.bg_elevated)
         self._inner.pack(fill="both", expand=True, padx=padding, pady=padding)
+
+    @property
+    def body(self):
+        return self._inner
+
+
+def _blend_hex(hex_color, target_hex, amount):
+    """Blend hex_color toward target_hex by `amount` (0=hex_color, 1=target_hex)."""
+    h = hex_color.lstrip("#")
+    t = target_hex.lstrip("#")
+    r1, g1, b1 = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    r2, g2, b2 = int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16)
+    r = round(r1 + (r2 - r1) * amount)
+    g = round(g1 + (g2 - g1) * amount)
+    b = round(b1 + (b2 - b1) * amount)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+class RoundedCard(tk.Frame):
+    """A true rounded-corner elevated surface for floating/borderless windows.
+
+    Where Card uses a plain 1px-border tk.Frame (fine for panels embedded in
+    an ordinary titled window), RoundedCard draws its own rounded outline and
+    a soft one-pixel-wider "elevation ring" behind it on a canvas -- used for
+    windows that set overridedirect(True) (StatusWindow, ConfirmWindow),
+    where there's no OS chrome to imply the window has depth, so the card
+    itself needs to look like it's floating rather than a plain rectangle.
+    """
+
+    def __init__(self, parent, theme, radius=Theme.ROUND_LG, **kwargs):
+        self._theme = theme
+        self._radius = radius
+        bg_parent = parent.cget("bg") if "bg" in parent.keys() else theme.bg
+        super().__init__(parent, bg=bg_parent, **kwargs)
+
+        self._canvas = tk.Canvas(self, bg=bg_parent, highlightthickness=0, bd=0)
+        self._canvas.pack(fill="both", expand=True)
+        self._inner = tk.Frame(self._canvas, bg=theme.bg_elevated)
+        self._canvas.bind("<Configure>", self._on_resize)
+
+    def _on_resize(self, event):
+        self._canvas.delete("card")
+        w, h = event.width, event.height
+        # Soft elevation: two stacked rings, each offset a little further
+        # down-and-right and blended toward black/white respectively, read
+        # together as a soft drop shadow without needing real alpha
+        # compositing (Tk canvases don't support translucent fills).
+        is_light = self._theme.name == "Light"
+        target = "#ffffff" if is_light else "#000000"
+        ring_far = _blend_hex(self._theme.bg, target, 0.35 if is_light else 0.55)
+        ring_near = _blend_hex(self._theme.bg, target, 0.18 if is_light else 0.3)
+        self._round_rect(self._canvas, 4, 7, w - 4, h - 1, self._radius, fill=ring_far, tags="card")
+        self._round_rect(self._canvas, 2, 4, w - 3, h - 2, self._radius, fill=ring_near, tags="card")
+        self._round_rect(self._canvas, 0, 0, w - 5, h - 6, self._radius, fill=self._theme.bg_elevated,
+                          outline=self._theme.border, width=1, tags="card")
+        self._canvas.create_window(1, 1, window=self._inner, anchor="nw",
+                                    width=max(w - 7, 1), height=max(h - 8, 1), tags="card")
+
+    @staticmethod
+    def _round_rect(canvas, x1, y1, x2, y2, r, **kwargs):
+        r = max(0, min(r, (x2 - x1) // 2, (y2 - y1) // 2))
+        points = [
+            x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+        ]
+        return canvas.create_polygon(points, smooth=True, **kwargs)
 
     @property
     def body(self):
@@ -394,7 +477,7 @@ def toggle_switch(parent, theme, initial, on_change, width=40, height=22):
 
     def on_click(_evt):
         state["on"] = not state["on"]
-        redraw()
+        redraw() 
         on_change(state["on"])
 
     canvas.bind("<Button-1>", on_click)

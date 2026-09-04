@@ -7,7 +7,7 @@ system utilities, and cross-platform fallbacks (Windows/macOS executable
 names alongside Linux binary names, since APP_LAUNCHERS previously only
 had Linux binaries).
 """
-
+ 
 import collections
 
 AppEntry = collections.namedtuple("AppEntry", ["label", "category", "icon", "launchers"])

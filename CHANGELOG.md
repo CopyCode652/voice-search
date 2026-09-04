@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## V3
+
+### Added
+
+- **Massively expanded math dictation, tuned for EE/engineering use.** `MATH_SUBSTITUTIONS` more than doubled (90 → 200+ patterns) and gained several new phrase-level parsers on top of the flat symbol table:
+  - Calculus: `limit as x approaches infinity of ...`, `limit of ... as x approaches 0`, `limit superior`/`limit inferior`, definite integrals with bounds (`integral from 0 to 1 of x squared dx` → `∫_{0}^{1} x² dx`), nth/partial derivatives (`third derivative of y with respect to t` → `d³y/dt³`).
+  - Linear algebra: `eigenvalues of A`, `eigenvector of A`, `rank of A`, `norm of v` (→ `‖v‖`), `kernel of T`, `span of v`.
+  - Complex numbers / phasors: `real part of z`, `imaginary part of z`, `complex conjugate of z`, `j omega` → `jω`.
+  - Statistics/probability: `standard deviation of X`, `variance of X`, `expected value of X`, `probability of A`.
+  - Number theory: `a mod b`, `gcd of a and b`, `lcm of a and b`, `a is congruent to b mod n`, `a divides b`.
+  - Combinatorics: `n choose k`, `n permute k`.
+  - Digital logic gates (core to EE): `A nand B`, `A nor B`, `A xor B`, `A xnor B` rendered as their proper symbols.
+  - Vector notation (`x hat` → x̂, `vector v` / `v vector` → v⃗) and convolution shorthand (`convolution of x and h` → `conv(x, h)`, `x convolved with h` → `x * h`).
+  - ~50 new capital Greek letters, set-theory symbols, extended logic operators, and EE units (siemens, tesla, weber, ms/µs/ns/ps, kbps/Mbps/Gbps, radians) plus signals/systems shorthand (`transfer function` → `H(s)`, `impulse response` → `h(t)`, `unit step function` → `u(t)`, `dirac delta`).
+- **7 new sound themes** (12 total, up from 5), adding **triangle**, **sawtooth**, and **filtered-noise** waveforms alongside the existing sine/square/soft: Retro arcade, Deep pulse, Marimba chime, Alert siren, Typewriter click, Bell tone, Laser tap.
+- **Volume control for tones**, adjustable from Settings → Audio & Tones as a 0–100% slider with a live readout. Applies immediately (no restart needed) and the Preview button plays at the currently-selected volume. Persisted as `tone_volume` in settings; fully backward-compatible with prior versions (defaults to the old hardcoded level).
+- **`RoundedCard`** (in `theme.py`) — a true rounded-corner surface with a soft layered drop-shadow for borderless/floating windows, replacing the old flat 1px-border-frame approximation. Applied to the Confirm popup, which now visually reads as a floating card rather than a plain rectangle, in both dark and light themes.
+- New design tokens (`accent_press`, `accent_soft`, `shadow_soft`) so pressed/selected states no longer reuse the hover color — buttons now have a distinct, slightly darker pressed color plus a small tactile "settle" inset on click instead of an instant flat color swap.
+
+### Changed
+
+- `PillButton` press feedback is now visually distinct from hover feedback (previously both states shared the same color).
+- The Confirm popup grew slightly (260px → 300px tall) to accommodate the new rounded-card padding and shadow without clipping the button row.
+- App background darkened slightly (`#15161a` → `#111217`) in dark mode to increase contrast against elevated cards now that cards have visible shadows.
+
 ## V2
 
 ### Added

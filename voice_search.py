@@ -37,7 +37,7 @@ from tkinter import ttk
 
 from theme import (
     Theme, get_theme, style_ttk, apply_window_chrome,
-    PillButton, toggle_switch,
+    PillButton, toggle_switch, Card, RoundedCard, SectionLabel,
 )
 from app_catalog import APPS, app_labels, app_launchers, app_categories, app_icon, CATEGORIES, APP_ALIASES
 
@@ -93,9 +93,17 @@ TONE_THEMES = {
     "Soft chime": (1046, [784, 659], [220, 220], "soft"),
     "Click": (1800, [1200], [500, 500, 500], "square"),
     "Sci-fi blip": (1500, [1900, 1500, 1100], [260, 180], "square"),
+    "Retro arcade": (1200, [900, 700, 500], [150, 400], "square"),
+    "Deep pulse": (220, [180, 140], [90, 90], "triangle"),
+    "Marimba chime": (1318, [988, 784, 659], [180, 180], "triangle"),
+    "Alert siren": (1000, [1400, 900, 1400], [500, 500], "sawtooth"),
+    "Typewriter click": (2200, [1600], [400, 400, 400, 400], "noise"),
+    "Bell tone": (1568, [1174, 880], [260, 260], "sine"),
+    "Laser tap": (2400, [2000, 1200], [140, 140], "sawtooth"),
     "Mute": (None, [], [], "sine"),
 }
 DEFAULT_TONE_THEME = "Classic beep"
+DEFAULT_TONE_VOLUME = 0.4
 
 UI_THEME_NAMES = ["Dark", "Light"]
 DEFAULT_UI_THEME = "Dark"
@@ -115,6 +123,7 @@ DEFAULT_SETTINGS = {
     "wake_word": DEFAULT_WAKE_WORD,
     "window_size": DEFAULT_WINDOW_SIZE,
     "tone_theme": DEFAULT_TONE_THEME,
+    "tone_volume": DEFAULT_TONE_VOLUME,
     "default_destination": "google",
     "wake_threshold": 0.5,
     "silence_timeout_sec": 8.0,
@@ -377,12 +386,32 @@ def list_input_devices(pa):
 
 
 def _make_tone(freq, duration, volume=0.4, sr_=RATE, waveform="sine"):
-    t = np.linspace(0, duration, int(sr_ * duration), False)
+    n = int(sr_ * duration)
+    t = np.linspace(0, duration, n, False)
     if waveform == "square":
         tone = np.sign(np.sin(freq * t * 2 * np.pi))
+    elif waveform == "triangle":
+        # Symmetric triangle wave via arcsin of a sine, normalized to [-1, 1].
+        tone = (2.0 / np.pi) * np.arcsin(np.sin(freq * t * 2 * np.pi))
+    elif waveform == "sawtooth":
+        # Rising ramp from -1 to 1 each period.
+        tone = 2.0 * (freq * t - np.floor(0.5 + freq * t))
+    elif waveform == "noise":
+        # Short filtered burst of noise for a mechanical "click"/typewriter feel.
+        rng = np.random.default_rng(int(freq) if freq else 1)
+        raw = rng.uniform(-1.0, 1.0, n)
+        # Simple one-pole low-pass so it reads as a "tick" rather than static.
+        alpha = 0.35
+        tone = np.empty_like(raw)
+        prev = 0.0
+        for i in range(n):
+            prev = alpha * raw[i] + (1 - alpha) * prev
+            tone[i] = prev
+        peak = np.max(np.abs(tone)) or 1.0
+        tone = tone / peak
     else:
         tone = np.sin(freq * t * 2 * np.pi)
-    fade = int(sr_ * (0.02 if waveform == "soft" else 0.005))
+    fade = int(sr_ * (0.02 if waveform in ("soft", "noise") else 0.005))
     fade = max(1, min(fade, len(tone) // 2))
     tone[:fade] *= np.linspace(0, 1, fade)
     tone[-fade:] *= np.linspace(1, 0, fade)
@@ -390,27 +419,38 @@ def _make_tone(freq, duration, volume=0.4, sr_=RATE, waveform="sine"):
     return (tone * vol * 32767).astype(np.int16)
 
 
-def _make_tone_sequence(freqs, duration, gap_sec, waveform="sine"):
+def _make_tone_sequence(freqs, duration, gap_sec, waveform="sine", volume=0.4):
     if not freqs:
         return np.zeros(0, dtype=np.int16)
     gap = np.zeros(int(RATE * gap_sec), dtype=np.int16)
     parts = []
     for i, f in enumerate(freqs):
-        parts.append(_make_tone(f, duration, waveform=waveform))
+        parts.append(_make_tone(f, duration, volume=volume, waveform=waveform))
         if i != len(freqs) - 1:
             parts.append(gap)
     return np.concatenate(parts)
 
 
-def build_tone_set(theme_name):
+def build_tone_set(theme_name, volume=DEFAULT_TONE_VOLUME):
+    """Synthesize the (activate, deactivate, timeout) tone arrays for a theme.
+
+    `volume` is a 0.0-1.0 master gain applied on top of each theme's own
+    per-waveform balancing, so users can turn all sounds up/down without
+    changing which theme (waveform/frequencies) they're using.
+    """
     activate_freq, deactivate_freqs, timeout_freqs, waveform = TONE_THEMES.get(
         theme_name, TONE_THEMES[DEFAULT_TONE_THEME])
-    if activate_freq is None:
+    volume = max(0.0, min(1.0, volume))
+    if activate_freq is None or volume == 0.0:
         activate = np.zeros(0, dtype=np.int16)
     else:
-        activate = _make_tone(activate_freq, 0.12, waveform=waveform)
-    deactivate = _make_tone_sequence(deactivate_freqs, 0.08, 0.05, waveform=waveform)
-    timeout = _make_tone_sequence(timeout_freqs, 0.15, 0.08, waveform=waveform)
+        activate = _make_tone(activate_freq, 0.12, volume=volume, waveform=waveform)
+    if volume == 0.0:
+        deactivate = np.zeros(0, dtype=np.int16)
+        timeout = np.zeros(0, dtype=np.int16)
+    else:
+        deactivate = _make_tone_sequence(deactivate_freqs, 0.08, 0.05, waveform=waveform, volume=volume)
+        timeout = _make_tone_sequence(timeout_freqs, 0.15, 0.08, waveform=waveform, volume=volume)
     return activate, deactivate, timeout
 
 
@@ -509,6 +549,156 @@ def _replace_log_variants(text):
     return text
 
 
+def _replace_limit_variants(text):
+    # "limit as x approaches infinity of f(x)" / "limit of f(x) as x approaches 0"
+    pattern_a = r"\blimit\s+as\s+(\w+)\s+(?:approaches|tends to|goes to)\s+([\w\u221e+\u2212-]+)\s+of\s+(.+?)(?=[.,;]|$)"
+    text = re.sub(pattern_a, lambda m: f"lim_{{{m.group(1)}\u2192{_word_to_digit(m.group(2))}}} {m.group(3).strip()}",
+                  text, flags=re.IGNORECASE)
+    pattern_b = r"\blimit\s+of\s+(.+?)\s+as\s+(\w+)\s+(?:approaches|tends to|goes to)\s+([\w\u221e+\u2212-]+)"
+    text = re.sub(pattern_b, lambda m: f"lim_{{{m.group(2)}\u2192{_word_to_digit(m.group(3))}}} {m.group(1).strip()}",
+                  text, flags=re.IGNORECASE)
+    text = re.sub(r"\blimit superior\b", "limsup", text, flags=re.IGNORECASE)
+    text = re.sub(r"\blimit inferior\b", "liminf", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_definite_integral_variants(text):
+    # "integral from 0 to infinity of f(x) dx" / "definite integral from a to b of ..."
+    pattern = (r"\b(?:definite\s+)?integral\s+from\s+([\w\u221e+\u2212-]+)\s+to\s+([\w\u221e+\u2212-]+)\s+of\s+(.+?)"
+               r"(?=[.,;]|$)")
+    def _sub(m):
+        lo = _word_to_digit(m.group(1))
+        hi = _word_to_digit(m.group(2))
+        return f"\u222b_{{{lo}}}^{{{hi}}} {m.group(3).strip()}"
+    return re.sub(pattern, _sub, text, flags=re.IGNORECASE)
+
+
+def _replace_nth_derivative_variants(text):
+    # "nth derivative of f" / "third derivative of f with respect to t" / "derivative of f with respect to t"
+    ordinal_group = rf"({_ORDINAL_PATTERN}|nth)"
+    pattern_a = rf"\b{ordinal_group}\s+derivative\s+of\s+(\w+)\s+with respect to\s+(\w+)\b"
+    def _sub_a(m):
+        order = "n" if m.group(1).lower() == "nth" else _word_to_digit(m.group(1))
+        return f"d^{order}{m.group(2)}/d{m.group(3)}^{order}"
+    text = re.sub(pattern_a, _sub_a, text, flags=re.IGNORECASE)
+
+    pattern_b = rf"\b{ordinal_group}\s+derivative\s+of\s+(\w+)\b"
+    def _sub_b(m):
+        order = "n" if m.group(1).lower() == "nth" else _word_to_digit(m.group(1))
+        return f"d^{order}{m.group(2)}/dx^{order}"
+    text = re.sub(pattern_b, _sub_b, text, flags=re.IGNORECASE)
+
+    pattern_c = r"\bderivative of\s+(\w+)\s+with respect to\s+(\w+)\b"
+    text = re.sub(pattern_c, lambda m: f"d{m.group(1)}/d{m.group(2)}", text, flags=re.IGNORECASE)
+
+    pattern_d = r"\bpartial derivative of\s+(\w+)\s+with respect to\s+(\w+)\b"
+    text = re.sub(pattern_d, lambda m: f"\u2202{m.group(1)}/\u2202{m.group(2)}", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_matrix_linear_algebra_variants(text):
+    # "eigenvalue of A", "eigenvector of A", "rank of A", "norm of v", "kernel of T", "span of v", "trace of A"
+    unary = {
+        "eigenvalues of": "eig(", "eigenvalue of": "eig(",
+        "eigenvectors of": "eigvec(", "eigenvector of": "eigvec(",
+        "rank of": "rank(", "kernel of": "ker(", "null space of": "null(",
+        "span of": "span(", "column space of": "col(", "row space of": "row(",
+        "norm of": "\u2016", "magnitude of": "\u2016",
+    }
+    for spoken, repl in sorted(unary.items(), key=lambda kv: -len(kv[0])):
+        pattern = rf"\b{re.escape(spoken)}\s+(\w+)\b"
+        if repl == "\u2016":
+            text = re.sub(pattern, lambda m: f"\u2016{m.group(1)}\u2016", text, flags=re.IGNORECASE)
+        else:
+            text = re.sub(pattern, lambda m, r=repl: f"{r}{m.group(1)})", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_complex_number_variants(text):
+    # EE-critical: phasors, real/imaginary part, complex conjugate, polar form
+    unary = {
+        "real part of": "Re(", "imaginary part of": "Im(",
+        "magnitude of": "|", "argument of": "\u2220", "phase angle of": "\u2220",
+    }
+    text = re.sub(r"\breal part of\s+(\w+)\b", lambda m: f"Re({m.group(1)})", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bimaginary part of\s+(\w+)\b", lambda m: f"Im({m.group(1)})", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bcomplex conjugate of\s+(\w+)\b", lambda m: f"{m.group(1)}*", text, flags=re.IGNORECASE)
+    # "5 angle 30 degrees" style phasor -> 5∠30°, handled after unit substitution runs on degrees separately;
+    # here we handle the explicit "angle" word form directly.
+    text = re.sub(r"\b(\w+)\s+at\s+angle\s+(\w+)\b", lambda m: f"{m.group(1)}\u2220{m.group(2)}", text,
+                  flags=re.IGNORECASE)
+    text = re.sub(r"\bj\s*omega\b", "j\u03c9", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bimaginary unit\b", "j", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_statistics_variants(text):
+    # "mean of X", "variance of X", "standard deviation of X", "expected value of X", "probability of A"
+    unary = {
+        "standard deviation of": "\u03c3(", "variance of": "Var(",
+        "expected value of": "E[", "expectation of": "E[",
+        "mean of": "\u03bc(", "average of": "\u03bc(",
+        "probability of": "P(", "covariance of": "Cov(", "correlation of": "corr(",
+    }
+    for spoken, opener in sorted(unary.items(), key=lambda kv: -len(kv[0])):
+        closer = "]" if opener == "E[" else ")"
+        pattern = rf"\b{re.escape(spoken)}\s+(\w+)\b"
+        text = re.sub(pattern, lambda m, o=opener, c=closer: f"{o}{m.group(1)}{c}", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_number_theory_variants(text):
+    # "a mod b", "a modulo b", "gcd of a and b", "lcm of a and b", "a divides b", "a is congruent to b mod n"
+    text = re.sub(r"\b(\w+)\s+(?:is\s+)?congruent to\s+(\w+)\s+mod(?:ulo)?\s+(\w+)\b",
+                  lambda m: f"{m.group(1)} \u2261 {m.group(2)} (mod {m.group(3)})", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+mod(?:ulo)?\s+(\w+)\b", lambda m: f"{m.group(1)} mod {m.group(2)}", text,
+                  flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:the\s+)?gcd\s+of\s+(\w+)\s+and\s+(\w+)\b",
+                  lambda m: f"gcd({m.group(1)}, {m.group(2)})", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:the\s+)?lcm\s+of\s+(\w+)\s+and\s+(\w+)\b",
+                  lambda m: f"lcm({m.group(1)}, {m.group(2)})", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+divides\s+(\w+)\b", lambda m: f"{m.group(1)} | {m.group(2)}", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_combinatorics_variants(text):
+    # "n choose k", "n permute k" / "n permutations of k"
+    text = re.sub(r"\b(\w+)\s+choose\s+(\w+)\b",
+                  lambda m: f"C({_word_to_digit(m.group(1))}, {_word_to_digit(m.group(2))})", text,
+                  flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+permute\s+(\w+)\b",
+                  lambda m: f"P({_word_to_digit(m.group(1))}, {_word_to_digit(m.group(2))})", text,
+                  flags=re.IGNORECASE)
+    return text
+
+
+def _replace_vector_notation_variants(text):
+    # "x hat" -> x̂ (unit vector notation), "vector v" / "v vector" -> v⃗
+    text = re.sub(r"\b(\w)\s+hat\b", lambda m: f"{m.group(1)}\u0302", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bunit vector\s+(\w)\b", lambda m: f"{m.group(1)}\u0302", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bvector\s+(\w+)\b", lambda m: f"{m.group(1)}\u20d7", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+vector\b", lambda m: f"{m.group(1)}\u20d7", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_convolution_variants(text):
+    # "convolution of x and h" -> conv(x, h); "x convolved with h" -> x * h
+    text = re.sub(r"\bconvolution of\s+(\w+)\s+and\s+(\w+)\b",
+                  lambda m: f"conv({m.group(1)}, {m.group(2)})", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+convolved with\s+(\w+)\b",
+                  lambda m: f"{m.group(1)} * {m.group(2)}", text, flags=re.IGNORECASE)
+    return text
+
+
+def _replace_logic_gate_variants(text):
+    # Digital logic, core to EE: NAND, NOR, XOR, XNOR, NOT
+    text = re.sub(r"\b(\w+)\s+nand\s+(\w+)\b", lambda m: f"{m.group(1)} \u22bc {m.group(2)}", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+nor\s+(\w+)\b", lambda m: f"{m.group(1)} \u2193 {m.group(2)}", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+xnor\s+(\w+)\b", lambda m: f"{m.group(1)} \u2299 {m.group(2)}", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\w+)\s+xor\s+(\w+)\b", lambda m: f"{m.group(1)} \u2295 {m.group(2)}", text, flags=re.IGNORECASE)
+    return text
+
+
 def _replace_function_of_variants(text):
     names = {
         "sine": "sin", "sin": "sin", "cosine": "cos", "cos": "cos",
@@ -529,6 +719,15 @@ def _replace_function_of_variants(text):
 
 
 MATH_SUBSTITUTIONS = [
+    # Capital Greek letters must be matched before the plain lowercase
+    # letter patterns below (e.g. "capital sigma" before "sigma"), since
+    # substitutions run in list order and lowercase "sigma" would otherwise
+    # consume the word first and leave "capital" dangling.
+    (r"\bcapital gamma\b", "\u0393"), (r"\bcapital delta\b", "\u0394"), (r"\bcapital theta\b", "\u0398"),
+    (r"\bcapital lambda\b", "\u039b"), (r"\bcapital xi\b", "\u039e"), (r"\bcapital pi\b", "\u03a0"),
+    (r"\bcapital sigma\b", "\u03a3"), (r"\bcapital phi\b", "\u03a6"), (r"\bcapital psi\b", "\u03a8"),
+    (r"\bcapital omega\b", "\u03a9"), (r"\bcapital upsilon\b", "\u03a5"),
+
     (r"\bdouble integral of\b", "\u222c"), (r"\btriple integral of\b", "\u222d"),
     (r"\bcontour integral of\b", "\u222e"), (r"\bline integral of\b", "\u222e"),
     (r"\bintegral of\b", "\u222b"), (r"\bindefinite integral of\b", "\u222b"),
@@ -586,16 +785,80 @@ MATH_SUBSTITUTIONS = [
     (r"\bmillihenr(?:y|ies)\b", "mH"), (r"\bhenr(?:y|ies)\b", "H"),
     (r"\bkiloohms?\b", "k\u03a9"), (r"\bkilo ohms?\b", "k\u03a9"), (r"\bmegaohms?\b", "M\u03a9"), (r"\bmega ohms?\b", "M\u03a9"),
     (r"\bdecibels?\b", "dB"),
+
+    # --- Extended set theory ---
+    (r"\bsubset of or equal to\b", "\u2286"), (r"\bsuperset of or equal to\b", "\u2287"),
+    (r"\bsymmetric difference\b", "\u2206"), (r"\bcardinality of\b", "|"),
+    (r"\bset of natural numbers\b", "\u2115"), (r"\bset of integers\b", "\u2124"),
+    (r"\bset of rational numbers\b", "\u211a"), (r"\bset of real numbers\b", "\u211d"),
+    (r"\bset of complex numbers\b", "\u2102"),
+
+    # --- Extended logic ---
+    (r"\bexclusive or\b", "\u2295"), (r"\blogical not\b", "\u00ac"),
+    (r"\bnand\b", "\u22bc"), (r"\bnor\b", "\u2193"),
+
+    # --- Extended calculus / analysis ---
+    (r"\bdefinite integral\b", "\u222b"), (r"\bsurface integral of\b", "\u222c"),
+    (r"\bvolume integral of\b", "\u222d"), (r"\bpartial fraction\b", "partial fraction"),
+    (r"\bwith respect to\b", "d/d"), (r"\bdel squared\b", "\u2207\u00b2"),
+
+    # --- Statistics / probability extras ---
+    (r"\bstandard normal distribution\b", "N(0, 1)"), (r"\bnormal distribution\b", "N"),
+    (r"\bchi squared\b", "\u03c7\u00b2"), (r"\bp value\b", "p-value"),
+    (r"\bconditional probability of\b", "P("),
+
+    # --- Number theory / combinatorics glyphs ---
+    (r"\bis prime\b", "is prime"), (r"\bcombinatorial coefficient\b", "C"),
+
+    # --- Complex numbers / phasors (EE) ---
+    (r"\bcomplex conjugate\b", "*"), (r"\bimaginary axis\b", "j-axis"),
+    (r"\breal axis\b", "\u211d-axis"), (r"\bphasor\b", "phasor"), (r"\bangle\b", "\u2220"),
+
+    # --- Vectors / linear algebra glyphs ---
+    (r"\bdirect sum\b", "\u2295"), (r"\btensor product\b", "\u2297"),
+    (r"\bidentity matrix\b", "I"), (r"\bzero matrix\b", "0"),
+
+    # --- Radians / angles ---
+    (r"\bradians?\b", "rad"), (r"\bpi radians\b", "\u03c0 rad"),
+
+    # --- More EE units ---
+    (r"\bsiemens\b", "S"), (r"\btesla\b", "T"), (r"\bweber\b", "Wb"),
+    (r"\bcoulombs?\b", "C"), (r"\bjoules?\b", "J"), (r"\bnewtons?\b", "N"),
+    (r"\bpascals?\b", "Pa"), (r"\bkelvin\b", "K"),
+    (r"\bmilliseconds?\b", "ms"), (r"\bmicroseconds?\b", "\u00b5s"), (r"\bnanoseconds?\b", "ns"),
+    (r"\bpicoseconds?\b", "ps"), (r"\bkilohms?\b", "k\u03a9"),
+    (r"\bgigabits?\b", "Gb"), (r"\bmegabits?\b", "Mb"), (r"\bkilobits?\b", "kb"),
+    (r"\bbits? per second\b", "bps"), (r"\bsamples per second\b", "Sa/s"),
+
+    # --- Signals / systems (EE) ---
+    (r"\bunit step function\b", "u(t)"), (r"\bunit impulse\b", "\u03b4(t)"),
+    (r"\bdirac delta\b", "\u03b4"), (r"\bkronecker delta\b", "\u03b4"),
+    (r"\btransfer function\b", "H(s)"), (r"\bimpulse response\b", "h(t)"),
+    (r"\bfrequency response\b", "H(j\u03c9)"),
 ]
 
 
 def apply_math_substitutions(text):
-    result = _replace_power_variants(text)
+    # Order matters: multi-word / structural phrases first (they consume
+    # surrounding context like "from a to b" or "as x approaches"), then
+    # simpler unary "X of Y" forms, then the flat symbol/unit table last.
+    result = _replace_definite_integral_variants(text)
+    result = _replace_limit_variants(result)
+    result = _replace_nth_derivative_variants(result)
+    result = _replace_power_variants(result)
     result = _replace_subscript_variants(result)
     result = _replace_log_variants(result)
     result = _replace_function_of_variants(result)
     result = _replace_root_of_variants(result)
     result = _replace_fraction_variants(result)
+    result = _replace_matrix_linear_algebra_variants(result)
+    result = _replace_complex_number_variants(result)
+    result = _replace_statistics_variants(result)
+    result = _replace_number_theory_variants(result)
+    result = _replace_combinatorics_variants(result)
+    result = _replace_logic_gate_variants(result)
+    result = _replace_convolution_variants(result)
+    result = _replace_vector_notation_variants(result)
     for pattern, replacement in MATH_SUBSTITUTIONS:
         result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
     return result
@@ -769,16 +1032,15 @@ class ConfirmWindow:
         self.initial_transcribed_text = initial_text
         self.on_search_callback = on_search_callback
 
-        width, height = 560, 260
+        width, height = 560, 300
         sw = self.top.winfo_screenwidth()
         x = (sw - width) // 2
         y = int(self.top.winfo_screenheight() * 0.22)
         self.top.geometry(f"{width}x{height}+{x}+{y}")
 
-        outer = tk.Frame(self.top, bg=theme.border, bd=0)
-        outer.pack(fill="both", expand=True, padx=1, pady=1)
-        card = tk.Frame(outer, bg=theme.bg_elevated)
-        card.pack(fill="both", expand=True)
+        rc = RoundedCard(self.top, theme, radius=Theme.ROUND_LG)
+        rc.pack(fill="both", expand=True, padx=Theme.SPACE_MD, pady=Theme.SPACE_MD)
+        card = rc.body
 
         header = tk.Frame(card, bg=theme.bg_elevated)
         header.pack(fill="x", padx=Theme.SPACE_LG, pady=(Theme.SPACE_LG, Theme.SPACE_SM))
@@ -792,7 +1054,7 @@ class ConfirmWindow:
         self._dest_pill.pack(side="right")
 
         text_wrap = tk.Frame(card, bg=theme.bg_elevated_2, highlightbackground=theme.border,
-                              highlightthickness=1)
+                              highlightthickness=1, bd=0)
         text_wrap.pack(fill="both", expand=True, padx=Theme.SPACE_LG, pady=(0, Theme.SPACE_SM))
 
         self.text_box = tk.Text(text_wrap, height=5, wrap="word", undo=True,
@@ -1221,6 +1483,8 @@ class SettingsWindow:
         self.available_wake_word_ids = available_wake_word_ids
         self.cb = callbacks
         self._active_key_recorder_widget = None
+        self.tone_var = None
+        self.tone_volume_var = None
 
         self.top = tk.Toplevel(root)
         self.top.title("Settings")
@@ -1416,16 +1680,45 @@ class SettingsWindow:
         self.tone_var = None
         def build_tone_control(p):
             self.tone_var = self._combo(p, list(TONE_THEMES.keys()), self.settings["tone_theme"],
-                                         self.cb["on_tone_change"], width=16)
-        self._row_card(frame, "Sound Theme", build_tone_control)
+                                         self.cb["on_tone_change"], width=18)
+        self._row_card(frame, "Sound Theme", build_tone_control,
+                        description=f"{len(TONE_THEMES)} themes across sine, square, triangle, sawtooth, and noise waveforms.")
 
-        preview_card = tk.Frame(frame, bg=theme.bg_elevated, highlightbackground=theme.border, highlightthickness=1)
+        # Volume slider — applies immediately and independently of the
+        # Advanced-section batch sliders, since it's tied to its own
+        # dedicated callback rather than the bundled parameter set.
+        volume_card = Card(frame, theme)
+        volume_card.pack(fill="x", pady=(0, Theme.SPACE_SM))
+        vol_top = tk.Frame(volume_card.body, bg=theme.bg_elevated)
+        vol_top.pack(fill="x")
+        tk.Label(vol_top, text="Volume", bg=theme.bg_elevated, fg=theme.fg,
+                 font=theme.font_body_bold(), anchor="w").pack(side="left")
+        self.tone_volume_var = tk.DoubleVar(value=self.settings.get("tone_volume", DEFAULT_TONE_VOLUME))
+        vol_value_label = tk.Label(vol_top, text=f"{int(round(self.tone_volume_var.get() * 100))}%",
+                                    bg=theme.bg_elevated, fg=theme.accent, font=theme.font_body_bold())
+        vol_value_label.pack(side="right")
+        vol_scale = ttk.Scale(volume_card.body, from_=0.0, to=1.0, variable=self.tone_volume_var, orient="horizontal")
+        vol_scale.pack(fill="x", pady=(Theme.SPACE_XS, 0))
+
+        def _on_volume_move(_evt=None):
+            vol_value_label.config(text=f"{int(round(self.tone_volume_var.get() * 100))}%")
+        def _on_volume_release(_evt=None):
+            _on_volume_move()
+            self.cb["on_tone_volume_change"](round(self.tone_volume_var.get(), 2))
+        vol_scale.bind("<Motion>", _on_volume_move)
+        vol_scale.bind("<ButtonRelease-1>", _on_volume_release)
+
+        preview_card = Card(frame, theme)
         preview_card.pack(fill="x", pady=(0, Theme.SPACE_SM))
-        inner = tk.Frame(preview_card, bg=theme.bg_elevated)
-        inner.pack(fill="x", padx=Theme.SPACE_MD, pady=Theme.SPACE_SM)
-        tk.Label(inner, text="Preview the activation sound", bg=theme.bg_elevated, fg=theme.fg,
-                 font=theme.font_body_bold()).pack(side="left")
-        PillButton(inner, theme, "\u25b6 Preview", kind="secondary", command=self._preview_tone, width=110).pack(side="right")
+        inner = tk.Frame(preview_card.body, bg=theme.bg_elevated)
+        inner.pack(fill="x")
+        prev_left = tk.Frame(inner, bg=theme.bg_elevated)
+        prev_left.pack(side="left", fill="x", expand=True)
+        tk.Label(prev_left, text="Preview the activation sound", bg=theme.bg_elevated, fg=theme.fg,
+                 font=theme.font_body_bold(), anchor="w").pack(fill="x")
+        tk.Label(prev_left, text="Plays the selected theme at the current volume.", bg=theme.bg_elevated,
+                 fg=theme.fg_muted, font=theme.font_small(), anchor="w").pack(fill="x")
+        PillButton(inner, theme, "\u25b6 Preview", kind="primary", command=self._preview_tone, width=110).pack(side="right")
 
     # -- Advanced ---------------------------------------------------------
     def _build_advanced_section(self):
@@ -1622,7 +1915,8 @@ class SettingsWindow:
             self._cancel_recording_hotkey()
 
     def _preview_tone(self):
-        activate, _, _ = build_tone_set(self.tone_var.get())
+        volume = self.tone_volume_var.get() if self.tone_volume_var is not None else DEFAULT_TONE_VOLUME
+        activate, _, _ = build_tone_set(self.tone_var.get(), volume)
         if len(activate) == 0:
             return
         play_tone_async(self.pa, activate)
@@ -1646,9 +1940,11 @@ class AudioWorker(threading.Thread):
         self.frames_captured_this_session = 0
 
         self.wake_word = wake_word
-        self.activate_tone, self.deactivate_tone, self.timeout_tone = build_tone_set(tone_theme)
-
         settings = settings or {}
+        self.tone_volume = settings.get("tone_volume", DEFAULT_TONE_VOLUME)
+        self._current_tone_theme = tone_theme
+        self.activate_tone, self.deactivate_tone, self.timeout_tone = build_tone_set(tone_theme, self.tone_volume)
+
         self.wake_threshold = settings.get("wake_threshold", 0.5)
         self.silence_timeout_sec = settings.get("silence_timeout_sec", 8.0)
         self.silence_amplitude_threshold = settings.get("silence_amplitude_threshold", 300)
@@ -1694,7 +1990,13 @@ class AudioWorker(threading.Thread):
         threading.Thread(target=self._load_wake_word_model, args=(wake_word,), daemon=True).start()
 
     def set_tone_theme(self, theme_name):
-        self.activate_tone, self.deactivate_tone, self.timeout_tone = build_tone_set(theme_name)
+        self._current_tone_theme = theme_name
+        self.activate_tone, self.deactivate_tone, self.timeout_tone = build_tone_set(theme_name, self.tone_volume)
+
+    def set_tone_volume(self, volume):
+        self.tone_volume = max(0.0, min(1.0, volume))
+        self.activate_tone, self.deactivate_tone, self.timeout_tone = build_tone_set(
+            self._current_tone_theme, self.tone_volume)
 
     def update_parameters(self, settings):
         with self._state_lock:
@@ -1889,6 +2191,7 @@ class App:
             "on_size_change": self.change_window_size,
             "on_theme_change": self.change_ui_theme,
             "on_tone_change": self.change_tone_theme,
+            "on_tone_volume_change": self.change_tone_volume,
             "on_destination_change": self.change_default_destination,
             "on_auto_search_change": self.change_auto_search,
             "on_clipboard_change": self.change_clipboard_auto_copy,
@@ -1949,6 +2252,11 @@ class App:
         self.settings["tone_theme"] = theme_name
         save_settings(self.settings)
         self.worker.set_tone_theme(theme_name)
+
+    def change_tone_volume(self, volume):
+        self.settings["tone_volume"] = float(volume)
+        save_settings(self.settings)
+        self.worker.set_tone_volume(float(volume))
 
     def change_default_destination(self, destination):
         self.settings["default_destination"] = destination
@@ -2081,4 +2389,4 @@ class App:
 
 
 if __name__ == "__main__":
-    App().run()
+    App().run() 
