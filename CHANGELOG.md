@@ -2,6 +2,41 @@
 
 All notable changes to this project are documented in this file.
 
+## V4
+
+### Added
+
+- **Voice command to open Settings.** Say the wake word, then "open settings", "open settings panel", "open setting", "show settings", or "launch settings menu" to open the Settings window hands-free — no click required. Handled by a new `is_open_settings_command()` parser, checked before app-launch and search parsing so it can never be shadowed by the existing "open settings" → *system* Settings app catalog entry (that entry now only fires for the more specific "system settings" / "control panel" phrasings).
+- **Two new window modes: Mini and Hidden.**
+  - **Mini** shrinks the status window to a 72×72 dot-only indicator — no status text, meter, hotkey label, or quit button — for a minimal always-on-top presence.
+  - **Hidden** fully withdraws the window (not just a 0×0 resize, which can still show a ghost taskbar entry on some window managers).
+  - A **second global hotkey** (`Ctrl+Shift+V` by default, independently configurable in Settings → Advanced) reveals the window regardless of its current mode, so Hidden mode is never a dead end. The two hotkeys are validated separately and checked for collisions — if they're ever set to the same combo, the reveal hotkey falls back to its default rather than silently breaking one of them.
+- **Full History window overhaul:**
+  - **Multi-select + bulk delete** (Delete key or "Delete Selected" button) for any number of rows at once.
+  - **Pin/favorite** — click the ★ column on any row to pin it; pinned entries always float to the top regardless of the active sort.
+  - **Sortable columns** — click any header to sort by it, click again to reverse.
+  - **Destination filter dropdown**, auto-populated from whatever destinations actually appear in your history (not a static list of every possible search engine).
+  - **Export to JSON or CSV** via a native save dialog.
+  - The existing text search box and "Clear All" (renamed from "Clear History") still work as before. Fully backward-compatible with old `history.json` files that predate the `favorite` field.
+
+### Fixed — bug audit
+
+- **`launch_app()` broke on every launcher path containing spaces** (e.g. `/Applications/Visual Studio Code.app`, `C:\Program Files\...\Code.exe`) — naive `cmd.split()` turned one path into several bogus argv tokens that could never resolve via `shutil.which`. At least 7 catalog entries were silently unlaunchable. Whole-path/bundle entries are now checked as a single token before falling back to splitting, and macOS `.app` bundles are launched via `open` instead of being exec'd directly (which does nothing).
+- **`AudioWorker._deactivate()`'s safety invariant check was a no-op.** The previous version captured `buffer_snapshot = self.recorded_frames` *after* `self.recorded_frames` had already been reassigned to `[]`, so the snapshot was always the fresh empty list and `len(buffer_snapshot) != 0` could never be true — the check could never actually catch a bug, regardless of what really happened. Snapshots are now taken in the correct order.
+- **`AudioWorker.toggle_from_hotkey()` read `self.is_active` without the state lock**, unlike every other state check in the class (`_toggle_from_wake_word`, `run()`). A near-simultaneous wake-word toggle or silence-timeout could make the hotkey read stale state; low-severity (the callees are individually safe and just no-op), but now reads consistently with the rest of the class.
+- **`get_valid_hotkey()` always fell back to the primary hotkey's default**, even when validating a different hotkey — validating a bad `reveal_hotkey_combo` would have silently reset it to the *activation* hotkey's default, risking a collision. Now takes an explicit `fallback` parameter.
+- Verified (via static analysis) that there are no duplicate keys across `APPS`, `APP_ALIASES`, `DESTINATION_ALIASES`, `SEARCH_URLS`, `TONE_THEMES`, or `DEFAULT_SETTINGS`, no dangling aliases pointing at nonexistent apps/destinations, no catalog apps unreachable by any alias, and every `SEARCH_URLS` template has exactly one format placeholder.
+
+### Optimized
+
+- **Vectorized the "noise" tone waveform.** It previously ran a pure-Python sample-by-sample `for` loop to apply a one-pole low-pass filter (thousands of scalar-float iterations per tone, on every preview/activate/deactivate sound). Replaced with a vectorized moving-average via `numpy.cumsum`, giving the same softened-click character with no interpreter-level loop. ~200 full tone-set builds now complete in ~0.13s.
+- No features were removed or behaviorally changed by the optimization pass; output waveforms sound the same, just computed faster.
+
+### Changed
+
+- Settings → Advanced now has two hotkey recorder rows (Activation, Reveal) sharing one generic recorder implementation instead of a single hardcoded one.
+- `HistoryWindow`'s constructor callback changed from `on_clear` to `on_save` to reflect that it's now called after every mutation (pin, delete, bulk delete, clear-all), not just a full clear.
+
 ## V3
 
 ### Added

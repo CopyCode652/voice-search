@@ -477,7 +477,7 @@ def toggle_switch(parent, theme, initial, on_change, width=40, height=22):
 
     def on_click(_evt):
         state["on"] = not state["on"]
-        redraw() 
+        redraw()
         on_change(state["on"])
 
     canvas.bind("<Button-1>", on_click)

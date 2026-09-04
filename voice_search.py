@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import json
+import csv
 import webbrowser
 import urllib.parse
 import datetime
@@ -33,7 +34,7 @@ from openwakeword.model import Model as WakeWordModel
 from pynput import keyboard as pynput_keyboard
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 
 from theme import (
     Theme, get_theme, style_ttk, apply_window_chrome,
@@ -62,6 +63,7 @@ CHUNK = 1280
 SAMPLE_WIDTH_BYTES = 2
 
 HOTKEY_COMBO_DEFAULT = "<ctrl>+<shift>+s"
+REVEAL_HOTKEY_COMBO_DEFAULT = "<ctrl>+<shift>+v"
 
 WAKE_WORD_TAIL_PATTERNS = [
     r"\balexa\b", r"\ba lexa\b", r"\balex a\b", r"\baleksa\b",
@@ -82,9 +84,11 @@ MAX_HISTORY_ENTRIES_DEFAULT = 200
 
 # (width, height, show_meter, show_hotkey, font_scale)
 WINDOW_SIZES = {
+    "Mini": (72, 72, False, False, 0.8),
     "Compact": (240, 108, False, False, 0.9),
     "Normal": (340, 220, True, True, 1.0),
     "Large": (440, 290, True, True, 1.25),
+    "Hidden": (0, 0, False, False, 1.0),
 }
 DEFAULT_WINDOW_SIZE = "Normal"
 
@@ -129,6 +133,7 @@ DEFAULT_SETTINGS = {
     "silence_timeout_sec": 8.0,
     "silence_amplitude_threshold": 300,
     "hotkey_combo": HOTKEY_COMBO_DEFAULT,
+    "reveal_hotkey_combo": REVEAL_HOTKEY_COMBO_DEFAULT,
     "ui_theme": DEFAULT_UI_THEME,
     "auto_search": False,
     "clipboard_auto_copy": False,
@@ -312,15 +317,15 @@ def log(msg):
     print(f"[{ts}] {msg}")
 
 
-def get_valid_hotkey(combo):
+def get_valid_hotkey(combo, fallback=HOTKEY_COMBO_DEFAULT):
     if not isinstance(combo, str):
-        return HOTKEY_COMBO_DEFAULT
+        return fallback
     try:
         pynput_keyboard.HotKey.parse(combo)
         return combo
     except Exception:
-        log(f"Warning: Invalid hotkey '{combo}' in settings. Falling back to '{HOTKEY_COMBO_DEFAULT}'.")
-        return HOTKEY_COMBO_DEFAULT
+        log(f"Warning: Invalid hotkey '{combo}' in settings. Falling back to '{fallback}'.")
+        return fallback
 
 
 def load_settings():
@@ -398,15 +403,25 @@ def _make_tone(freq, duration, volume=0.4, sr_=RATE, waveform="sine"):
         tone = 2.0 * (freq * t - np.floor(0.5 + freq * t))
     elif waveform == "noise":
         # Short filtered burst of noise for a mechanical "click"/typewriter feel.
+        #
+        # PERF: the original one-pole low-pass ran as a pure-Python
+        # sample-by-sample for loop (n iterations of scalar float math per
+        # tone). For a 16kHz signal that's thousands of interpreter-level
+        # iterations on every preview/activation/deactivation, which is
+        # measurably slower than the vectorized numpy path used by every
+        # other waveform. A short moving-average via cumulative sum gives
+        # the same "softened click" character (attenuates high-frequency
+        # noise, keeps a percussive envelope) without a Python-level loop.
         rng = np.random.default_rng(int(freq) if freq else 1)
         raw = rng.uniform(-1.0, 1.0, n)
-        # Simple one-pole low-pass so it reads as a "tick" rather than static.
-        alpha = 0.35
-        tone = np.empty_like(raw)
-        prev = 0.0
-        for i in range(n):
-            prev = alpha * raw[i] + (1 - alpha) * prev
-            tone[i] = prev
+        window = max(1, int(sr_ * 0.001))  # ~1ms smoothing window
+        cumsum = np.cumsum(np.insert(raw, 0, 0.0))
+        smoothed = (cumsum[window:] - cumsum[:-window]) / window
+        # Pad back to length n (the moving average shortens the array by
+        # window-1 samples); repeat the first value rather than zero-pad,
+        # so the fade-in envelope below still starts from a real sample.
+        pad = np.full(n - len(smoothed), smoothed[0] if len(smoothed) else 0.0)
+        tone = np.concatenate([pad, smoothed])
         peak = np.max(np.abs(tone)) or 1.0
         tone = tone / peak
     else:
@@ -924,20 +939,66 @@ def parse_app_command(text):
 def launch_app(app_id):
     label = APP_LABELS.get(app_id, app_id)
     for cmd in APP_LAUNCHERS.get(app_id, []):
-        parts = cmd.split()
+        # BUGFIX: cmd.split() breaks any launcher entry whose path contains
+        # spaces (e.g. "/Applications/Visual Studio Code.app" or
+        # "C:\Program Files\...\Code.exe") into multiple bogus argv tokens,
+        # so shutil.which(parts[0]) can never resolve them -- these entries
+        # were silently unlaunchable. A path with no spaces still splits and
+        # behaves exactly as before; only whole-path/bundle entries change.
+        if os.path.isfile(cmd) or os.path.isdir(cmd) or shutil.which(cmd):
+            parts = [cmd]
+        else:
+            parts = cmd.split()
         if not parts:
             continue
         exe = shutil.which(parts[0])
-        if not exe and not os.path.isfile(parts[0]):
+        if not exe and not os.path.isfile(parts[0]) and not os.path.isdir(parts[0]):
             continue
         try:
-            subprocess.Popen(parts, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            if parts[0].endswith(".app") and os.path.isdir(parts[0]):
+                # macOS application bundle -- exec'ing the .app directory
+                # itself does nothing; it needs to go through `open`.
+                subprocess.Popen(["open", parts[0]], stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, start_new_session=True)
+            else:
+                subprocess.Popen(parts, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             log(f"Launched {label} via '{cmd}'")
             return True, label
         except Exception as e:
             log(f"Failed to launch {label} via '{cmd}': {e}")
     log(f"Could not find an installed executable for {label}.")
     return False, label
+
+
+# Voice command to open the Settings panel: wake word, then "open settings"
+# or "open settings panel" (and a few natural variants). Mirrors
+# parse_app_command's trigger + filler-word handling so "open up the
+# settings panel" and similar phrasing also match.
+_SETTINGS_TRIGGER_WORDS = ("open", "show", "launch")
+_SETTINGS_TARGET_PHRASES = ("settings panel", "settings menu", "setting panel", "settings", "setting")
+
+
+def is_open_settings_command(text):
+    lowered = text.strip().lower().rstrip(",.!?")
+    words = lowered.split()
+    if not words:
+        return False
+
+    trigger_len = 0
+    for trigger in sorted(_SETTINGS_TRIGGER_WORDS, key=lambda t: -len(t.split())):
+        trigger_words = trigger.split()
+        if words[:len(trigger_words)] == trigger_words:
+            trigger_len = len(trigger_words)
+            break
+    if trigger_len == 0:
+        return False
+
+    remainder_words = words[trigger_len:]
+    while remainder_words and remainder_words[0] in _APP_FILLER_WORDS:
+        remainder_words = remainder_words[1:]
+    remainder = " ".join(remainder_words).strip()
+
+    return remainder in _SETTINGS_TARGET_PHRASES
 
 
 # ============================================================================
@@ -1137,22 +1198,34 @@ class ConfirmWindow:
 
 
 class HistoryWindow:
-    """Search history browser, restyled as a themed data table with a search box."""
+    """Search history browser: themed data table with filtering, sorting,
+    multi-select bulk actions, favorites/pins, and export.
 
-    def __init__(self, root, theme, history_deque, on_rerun, on_clear):
+    History entries are plain dicts (see App.add_to_history) with keys
+    datetime/destination/transcribed/query, plus an optional "favorite"
+    bool that older history.json files won't have -- every read of that
+    key goes through entry.get("favorite", False) so old data loads fine.
+    """
+
+    COLUMNS = ("pin", "idx", "datetime", "destination", "transcribed", "query")
+
+    def __init__(self, root, theme, history_deque, on_rerun, on_save):
         self.theme = theme
         self.top = tk.Toplevel(root)
         self.top.title("Search History")
         self.top.attributes("-topmost", True)
-        self.top.geometry("780x480")
-        self.top.minsize(600, 320)
+        self.top.geometry("880x520")
+        self.top.minsize(680, 360)
         apply_window_chrome(self.top, theme)
         style_ttk(self.top, theme)
 
         self.history_deque = history_deque
         self.on_rerun = on_rerun
-        self.on_clear = on_clear
+        self.on_save = on_save
         self._filter_text = tk.StringVar()
+        self._dest_filter = tk.StringVar(value="All destinations")
+        self._sort_key = "idx"
+        self._sort_reverse = True  # newest first by default
 
         header = tk.Frame(self.top, bg=theme.bg)
         header.pack(fill="x", padx=Theme.SPACE_LG, pady=(Theme.SPACE_LG, Theme.SPACE_SM))
@@ -1166,32 +1239,54 @@ class HistoryWindow:
                  font=theme.font_small()).pack(side="left", padx=(8, 2))
         search_entry = tk.Entry(search_wrap, textvariable=self._filter_text, bg=theme.bg_elevated_2,
                                  fg=theme.fg, relief="flat", insertbackground=theme.fg,
-                                 font=theme.font_body(), width=24)
+                                 font=theme.font_body(), width=22)
         search_entry.pack(side="left", ipady=4, padx=(0, 8))
         self._filter_text.trace_add("write", lambda *a: self._populate_tree())
+
+        # Destination filter dropdown, populated from whatever destinations
+        # actually appear in history (not the full SEARCH_URLS catalog --
+        # a dropdown listing 15 destinations you've never searched is just
+        # noise, and it needs to update as history grows).
+        self.dest_combo = ttk.Combobox(header, textvariable=self._dest_filter, state="readonly",
+                                        width=16, font=theme.font_body())
+        self.dest_combo.pack(side="right", padx=(0, Theme.SPACE_SM))
+        self.dest_combo.bind("<<ComboboxSelected>>", lambda e: self._populate_tree())
+
+        # Toolbar: bulk-action buttons, only enabled when rows are selected.
+        toolbar = tk.Frame(self.top, bg=theme.bg)
+        toolbar.pack(fill="x", padx=Theme.SPACE_LG, pady=(0, Theme.SPACE_SM))
+        tk.Label(toolbar, text="Click \u2605 to pin \u00b7 click a column header to sort \u00b7 double-click a row to re-run",
+                 bg=theme.bg, fg=theme.fg_faint, font=theme.font_small()).pack(side="left")
+        self.export_btn = PillButton(toolbar, theme, "Export\u2026", kind="secondary",
+                                      command=self._export, width=100)
+        self.export_btn.pack(side="right")
 
         table_card = tk.Frame(self.top, bg=theme.bg_elevated, highlightbackground=theme.border,
                                highlightthickness=1)
         table_card.pack(fill="both", expand=True, padx=Theme.SPACE_LG, pady=(0, Theme.SPACE_SM))
 
-        columns = ("idx", "datetime", "destination", "transcribed", "query")
-        self.tree = ttk.Treeview(table_card, columns=columns, show="headings", selectmode="browse")
-        self.tree.heading("idx", text="#")
-        self.tree.column("idx", width=40, anchor="center")
-        self.tree.heading("datetime", text="Date & Time")
+        self.tree = ttk.Treeview(table_card, columns=self.COLUMNS, show="headings",
+                                  selectmode="extended")
+        self.tree.heading("pin", text="\u2605")
+        self.tree.column("pin", width=28, anchor="center", stretch=False)
+        self.tree.heading("idx", text="#", command=lambda: self._sort_by("idx"))
+        self.tree.column("idx", width=40, anchor="center", stretch=False)
+        self.tree.heading("datetime", text="Date & Time", command=lambda: self._sort_by("datetime"))
         self.tree.column("datetime", width=150, anchor="w")
-        self.tree.heading("destination", text="Website")
-        self.tree.column("destination", width=120, anchor="w")
-        self.tree.heading("transcribed", text="Transcribed Text")
-        self.tree.column("transcribed", width=210, anchor="w")
-        self.tree.heading("query", text="Final Query")
-        self.tree.column("query", width=210, anchor="w")
+        self.tree.heading("destination", text="Website", command=lambda: self._sort_by("destination"))
+        self.tree.column("destination", width=110, anchor="w")
+        self.tree.heading("transcribed", text="Transcribed Text", command=lambda: self._sort_by("transcribed"))
+        self.tree.column("transcribed", width=220, anchor="w")
+        self.tree.heading("query", text="Final Query", command=lambda: self._sort_by("query"))
+        self.tree.column("query", width=220, anchor="w")
 
         tree_scroll = ttk.Scrollbar(table_card, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_scroll.set)
         self.tree.pack(side="left", fill="both", expand=True, padx=(1, 0), pady=1)
         tree_scroll.pack(side="right", fill="y", pady=1, padx=(0, 1))
-        self.tree.bind("<Double-1>", lambda e: self._on_rerun())
+        self.tree.bind("<Double-1>", self._on_row_double_click)
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._update_selection_state())
+        self.tree.bind("<Delete>", lambda e: self._delete_selected())
 
         self._populate_tree()
 
@@ -1202,50 +1297,185 @@ class HistoryWindow:
         self.count_label.pack(side="left")
 
         PillButton(btn_row, theme, "Close", kind="ghost", command=self.top.destroy, width=90).pack(side="right")
-        PillButton(btn_row, theme, "Clear History", kind="danger", command=self._on_clear, width=130).pack(side="right", padx=(0, Theme.SPACE_SM))
-        PillButton(btn_row, theme, "Re-run Selected", kind="primary", command=self._on_rerun, width=150).pack(side="right", padx=(0, Theme.SPACE_SM))
+        PillButton(btn_row, theme, "Clear All", kind="danger", command=self._on_clear_all, width=110).pack(side="right", padx=(0, Theme.SPACE_SM))
+        self.delete_btn = PillButton(btn_row, theme, "Delete Selected", kind="danger",
+                                      command=self._delete_selected, width=150)
+        self.delete_btn.pack(side="right", padx=(0, Theme.SPACE_SM))
+        self.rerun_btn = PillButton(btn_row, theme, "Re-run Selected", kind="primary",
+                                     command=self._on_rerun, width=150)
+        self.rerun_btn.pack(side="right", padx=(0, Theme.SPACE_SM))
+        self._update_selection_state()
+
+    # -- data helpers ---------------------------------------------------
+    def _entries_with_index(self):
+        """Return [(1-based index into history_deque, entry_dict), ...]."""
+        return list(enumerate(list(self.history_deque), start=1))
+
+    def _refresh_destination_choices(self):
+        seen = sorted({e.get("destination", "") for _, e in self._entries_with_index() if e.get("destination")})
+        values = ["All destinations"] + seen
+        self.dest_combo.configure(values=values)
+        if self._dest_filter.get() not in values:
+            self._dest_filter.set("All destinations")
+
+    def _sort_by(self, key):
+        if self._sort_key == key:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_key = key
+            self._sort_reverse = key in ("idx", "datetime")  # newest-first defaults for these
+        self._populate_tree()
 
     def _populate_tree(self):
+        self._refresh_destination_choices()
         for item in self.tree.get_children():
             self.tree.delete(item)
 
         needle = self._filter_text.get().strip().lower()
-        shown = 0
-        total = len(self.history_deque)
-        for i, entry in enumerate(reversed(list(self.history_deque))):
-            actual_idx = total - i
+        dest_filter = self._dest_filter.get()
+        rows = []
+        for idx, entry in self._entries_with_index():
             transcribed = entry.get("transcribed", "")
             query = entry.get("query", "")
             destination = entry.get("destination", "")
-
             if needle and needle not in transcribed.lower() and needle not in query.lower() and needle not in destination.lower():
                 continue
-            shown += 1
+            if dest_filter != "All destinations" and destination != dest_filter:
+                continue
+            rows.append((idx, entry))
 
-            self.tree.insert("", "end", iid=str(actual_idx), values=(
-                actual_idx,
+        total = len(list(self.history_deque))
+        shown = len(rows)
+
+        # Pinned entries always float to the top regardless of the active
+        # sort column, then the chosen sort applies within each group --
+        # this is what makes "pin" meaningfully different from just another
+        # sortable column.
+        def sort_key_fn(row):
+            idx, entry = row
+            pinned = entry.get("favorite", False)
+            if self._sort_key == "idx":
+                base = idx
+            else:
+                base = str(entry.get(self._sort_key, "")).lower()
+            return (0 if pinned else 1, base)
+
+        rows.sort(key=sort_key_fn, reverse=self._sort_reverse)
+        # Re-sort so pinned-first ordering survives the reverse flag above
+        # (reverse=True on a tuple would also flip the pin priority, which
+        # we don't want -- pinned should always be first, sort direction
+        # only affects order *within* the pinned/unpinned groups).
+        rows.sort(key=lambda r: 0 if r[1].get("favorite", False) else 1)
+
+        for idx, entry in rows:
+            transcribed = entry.get("transcribed", "")
+            query = entry.get("query", "")
+            pin_mark = "\u2605" if entry.get("favorite", False) else "\u2606"
+            self.tree.insert("", "end", iid=str(idx), values=(
+                pin_mark,
+                idx,
                 entry.get("datetime", ""),
-                destination,
+                entry.get("destination", ""),
                 (transcribed[:35] + "...") if len(transcribed) > 35 else transcribed,
                 (query[:40] + "...") if len(query) > 40 else query
             ))
 
         if hasattr(self, "count_label"):
-            self.count_label.config(text=f"{shown} of {total} entries" if needle else f"{total} entries")
+            suffix = " (filtered)" if (needle or dest_filter != "All destinations") else ""
+            self.count_label.config(text=f"{shown} of {total} entries{suffix}")
+
+    def _on_row_double_click(self, event):
+        # A click that landed on the pin column toggles the pin instead of
+        # re-running the search -- otherwise pinning would require a
+        # separate button and an extra click every time.
+        region = self.tree.identify_region(event.x, event.y)
+        col = self.tree.identify_column(event.x)
+        row = self.tree.identify_row(event.y)
+        if region == "cell" and col == "#1" and row:
+            self._toggle_pin(int(row))
+            return
+        self._on_rerun()
+
+    def _toggle_pin(self, idx):
+        entries = list(self.history_deque)
+        if not (1 <= idx <= len(entries)):
+            return
+        entry = entries[idx - 1]
+        entry["favorite"] = not entry.get("favorite", False)
+        self._commit(entries)
+        self._populate_tree()
+
+    def _update_selection_state(self):
+        has_selection = bool(self.tree.selection())
+        self.rerun_btn.set_enabled(len(self.tree.selection()) == 1)
+        self.delete_btn.set_enabled(has_selection)
 
     def _on_rerun(self):
         selected = self.tree.selection()
-        if not selected:
+        if len(selected) != 1:
             return
         idx = int(selected[0])
-        entry = list(self.history_deque)[idx - 1]
+        entries = list(self.history_deque)
+        if not (1 <= idx <= len(entries)):
+            return
+        entry = entries[idx - 1]
         self.on_rerun(entry.get("destination"), entry.get("query"))
         self.top.destroy()
 
-    def _on_clear(self):
-        self.history_deque.clear()
-        self.on_clear()
+    def _delete_selected(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        indices_to_remove = {int(i) for i in selected}
+        entries = list(self.history_deque)
+        kept = [e for i, e in enumerate(entries, start=1) if i not in indices_to_remove]
+        self._commit(kept)
         self._populate_tree()
+        self._update_selection_state()
+
+    def _on_clear_all(self):
+        self._commit([])
+        self._populate_tree()
+        self._update_selection_state()
+
+    def _commit(self, new_entries_list):
+        # Rebuild the deque in place (preserving its maxlen) rather than
+        # reassigning self.history_deque, since App holds its own reference
+        # to the same deque object and would otherwise go stale.
+        self.history_deque.clear()
+        self.history_deque.extend(new_entries_list)
+        self.on_save()
+
+    def _export(self):
+        rows = [entry for _, entry in self._entries_with_index()]
+        if not rows:
+            log("No history entries to export.")
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.top, title="Export search history",
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json"), ("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".csv"):
+                with open(path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=["datetime", "destination", "transcribed", "query", "favorite"])
+                    writer.writeheader()
+                    for entry in rows:
+                        writer.writerow({
+                            "datetime": entry.get("datetime", ""),
+                            "destination": entry.get("destination", ""),
+                            "transcribed": entry.get("transcribed", ""),
+                            "query": entry.get("query", ""),
+                            "favorite": entry.get("favorite", False),
+                        })
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(rows, f, indent=2)
+            log(f"Exported {len(rows)} history entries to {path}")
+        except OSError as e:
+            log(f"Failed to export history: {e}")
 
 
 class StatusWindow:
@@ -1348,6 +1578,16 @@ class StatusWindow:
         self.set_idle()
 
     def apply_size(self, size_name):
+        if size_name == "Hidden":
+            # Fully withdraw the window rather than shrinking it to 0x0 --
+            # a 0-size Toplevel still exists in the taskbar/window list on
+            # some window managers and can still steal focus on click.
+            self.size_name = size_name
+            self.top.withdraw()
+            return
+        if self.top.state() == "withdrawn":
+            self.top.deiconify()
+
         width, height, show_meter, show_hotkey, font_scale = WINDOW_SIZES.get(
             size_name, WINDOW_SIZES[DEFAULT_WINDOW_SIZE])
         self.size_name = size_name
@@ -1356,19 +1596,40 @@ class StatusWindow:
         offset = "+" + pos[1] if len(pos) > 1 else "+40+40"
         self.top.geometry(f"{width}x{height}{offset}")
 
+        is_mini = size_name == "Mini"
+        # Mini mode drops the status text and quit button entirely, leaving
+        # only the status dot and a right-click menu (wired in App) to reach
+        # settings/quit -- it's meant to be a small always-on-top indicator,
+        # not a miniature version of the full status card.
+        if is_mini:
+            self.status_label.pack_forget()
+            self.settings_btn.pack_forget()
+            self.top_row.pack_configure(padx=0, pady=(Theme.SPACE_SM, 0))
+            self.status_dot.pack_configure(padx=0)
+            self.quit_btn.master.pack_forget()
+        else:
+            if not self.status_label.winfo_ismapped():
+                self.status_label.pack(side="left", fill="x", expand=True)
+            if not self.settings_btn.winfo_ismapped():
+                self.settings_btn.pack(side="right")
+            self.top_row.pack_configure(padx=Theme.SPACE_MD, pady=(Theme.SPACE_MD, 0))
+            self.status_dot.pack_configure(padx=(0, 8))
+            if not self.quit_btn.master.winfo_ismapped():
+                self.quit_btn.master.pack(pady=(0, Theme.SPACE_MD))
+
         status_size = max(9, round(11 * font_scale))
         hotkey_size = max(7, round(8 * font_scale))
-        self.status_label.config(font=self.theme.font(status_size, "bold"), wraplength=width - 70)
+        self.status_label.config(font=self.theme.font(status_size, "bold"), wraplength=max(width - 70, 40))
         self.hotkey_label.config(font=self.theme.font(hotkey_size))
 
-        if show_hotkey:
+        if show_hotkey and not is_mini:
             self.hotkey_label.pack(pady=(2, Theme.SPACE_SM))
         else:
             self.hotkey_label.pack_forget()
 
         meter_height = max(16, round(30 * font_scale))
         self.meter_canvas.config(height=meter_height)
-        if show_meter:
+        if show_meter and not is_mini:
             self.meter_canvas.pack(pady=(0, Theme.SPACE_SM), padx=Theme.SPACE_MD, fill="x")
         else:
             self.meter_canvas.pack_forget()
@@ -1483,6 +1744,7 @@ class SettingsWindow:
         self.available_wake_word_ids = available_wake_word_ids
         self.cb = callbacks
         self._active_key_recorder_widget = None
+        self._recording_var_name = None
         self.tone_var = None
         self.tone_volume_var = None
 
@@ -1778,21 +2040,39 @@ class SettingsWindow:
         inner = tk.Frame(card, bg=theme.bg_elevated)
         inner.pack(fill="x", padx=Theme.SPACE_MD, pady=Theme.SPACE_SM)
 
-        tk.Label(inner, text="Activation Hotkey", bg=theme.bg_elevated, fg=theme.fg,
-                 font=theme.font_body_bold(), anchor="w").pack(fill="x")
+        self.hotkey_var = tk.StringVar(value=self.settings["hotkey_combo"])
+        self.hotkey_record_btn = self._build_single_hotkey_control(
+            inner, "Activation Hotkey", self.hotkey_var, "hotkey_var", top_pad=False)
 
-        row = tk.Frame(inner, bg=theme.bg_elevated)
+        divider = tk.Frame(inner, bg=theme.border, height=1)
+        divider.pack(fill="x", pady=Theme.SPACE_SM)
+
+        self.reveal_hotkey_var = tk.StringVar(value=self.settings.get("reveal_hotkey_combo", REVEAL_HOTKEY_COMBO_DEFAULT))
+        self.reveal_hotkey_record_btn = self._build_single_hotkey_control(
+            inner, "Reveal Window Hotkey (works even in Hidden mode)", self.reveal_hotkey_var,
+            "reveal_hotkey_var", top_pad=True)
+
+    def _build_single_hotkey_control(self, parent, label_text, string_var, var_attr_name, top_pad):
+        theme = self.theme
+        tk.Label(parent, text=label_text, bg=theme.bg_elevated, fg=theme.fg,
+                 font=theme.font_body_bold(), anchor="w").pack(fill="x", pady=(Theme.SPACE_SM if top_pad else 0, 0))
+
+        row = tk.Frame(parent, bg=theme.bg_elevated)
         row.pack(fill="x", pady=(Theme.SPACE_XS, 0))
 
-        self.hotkey_var = tk.StringVar(value=self.settings["hotkey_combo"])
-        entry = tk.Entry(row, textvariable=self.hotkey_var, state="readonly", font=theme.font_mono(10),
+        entry = tk.Entry(row, textvariable=string_var, state="readonly", font=theme.font_mono(10),
                           bg=theme.bg_elevated_2, fg=theme.fg, relief="flat",
                           readonlybackground=theme.bg_elevated_2, justify="center")
         entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, Theme.SPACE_SM))
 
-        self.record_btn = PillButton(row, theme, "Record", kind="secondary",
-                                      command=self._start_recording_hotkey, width=100)
-        self.record_btn.pack(side="right")
+        record_btn = PillButton(row, theme, "Record", kind="secondary",
+                                 command=lambda: self._start_recording_hotkey(var_attr_name), width=100)
+        record_btn.pack(side="right")
+        return record_btn
+
+    def _active_record_button(self):
+        return {"hotkey_var": self.hotkey_record_btn,
+                "reveal_hotkey_var": self.reveal_hotkey_record_btn}.get(self._recording_var_name)
 
     # -- Voice Apps (new section) -------------------------------------------
     def _build_apps_section(self):
@@ -1860,18 +2140,22 @@ class SettingsWindow:
             "silence_timeout_sec": round(self.silence_timeout_var.get(), 1),
             "silence_amplitude_threshold": int(self.mic_thresh_var.get()),
             "hotkey_combo": self.hotkey_var.get(),
+            "reveal_hotkey_combo": self.reveal_hotkey_var.get(),
             "max_history_entries": int(self.max_history_var.get()),
         })
 
-    def _start_recording_hotkey(self):
+    def _start_recording_hotkey(self, var_attr_name="hotkey_var"):
         # BUGFIX (from the original script): the old version bound <KeyPress>
         # globally on the settings window and never unbound it if the user
         # pressed only a modifier key or clicked away, leaving a permanent
         # dangling key-capture. We now bind narrowly, always clean up via
         # <Escape> and <FocusOut>, and never leave the window in "recording"
         # state if the user abandons the action.
-        self.record_btn.set_text("Press keys\u2026")
-        self.record_btn.set_enabled(False)
+        self._recording_var_name = var_attr_name
+        btn = self._active_record_button()
+        if btn is not None:
+            btn.set_text("Press keys\u2026")
+            btn.set_enabled(False)
         self._active_key_recorder_widget = self.top
         self.top.bind("<KeyPress>", self._on_key_press_record)
         self.top.bind("<Escape>", self._cancel_recording_hotkey, add="+")
@@ -1881,9 +2165,12 @@ class SettingsWindow:
         if self._active_key_recorder_widget is None:
             return
         self.top.unbind("<KeyPress>")
-        self.record_btn.set_text("Record")
-        self.record_btn.set_enabled(True)
+        btn = self._active_record_button()
+        if btn is not None:
+            btn.set_text("Record")
+            btn.set_enabled(True)
         self._active_key_recorder_widget = None
+        self._recording_var_name = None
 
     def _on_key_press_record(self, event):
         key = event.keysym.lower()
@@ -1905,9 +2192,17 @@ class SettingsWindow:
         combo = "+".join(mods + [key])
         formatted_combo = f"<{combo}>"
 
+        target_var_name = self._recording_var_name
         try:
             pynput_keyboard.HotKey.parse(formatted_combo)
-            self.hotkey_var.set(formatted_combo)
+            target_var = getattr(self, target_var_name)
+            other_var_name = "reveal_hotkey_var" if target_var_name == "hotkey_var" else "hotkey_var"
+            other_var = getattr(self, other_var_name)
+            if formatted_combo == other_var.get():
+                log(f"'{formatted_combo}' is already used by the other hotkey -- pick a different combination.")
+                self._cancel_recording_hotkey()
+                return
+            target_var.set(formatted_combo)
             self._cancel_recording_hotkey()
             self._on_param_change()
         except Exception:
@@ -2022,28 +2317,36 @@ class AudioWorker(threading.Thread):
         # BUGFIX (from the original script): the post-deactivate invariant
         # check read self.is_active / self.recorded_frames *outside* the
         # state lock, right after releasing it -- a benign-looking but
-        # technically unsafe read of shared state. The check now happens
-        # against the locally captured snapshot taken while still holding
-        # the lock, which is what it was actually trying to verify.
+        # technically unsafe read of shared state.
+        #
+        # BUGFIX (this pass): the previous fix for the above introduced a
+        # new bug -- it captured buffer_snapshot = self.recorded_frames
+        # *after* self.recorded_frames had already been reassigned to [],
+        # so buffer_snapshot was always the fresh empty list and the check
+        # `len(buffer_snapshot) != 0` could never fail regardless of what
+        # actually happened. It verified nothing. Snapshots are now taken
+        # in the correct order, all while still holding the lock.
         with self._state_lock:
             if not self.is_active:
                 return
+            is_active_snapshot = self.is_active   # True, about to be cleared below
+            buffer_snapshot = self.recorded_frames  # reference to the pre-clear list
             self.is_active = False
             now = time.time()
             duration = now - self.session_start_ts if self.session_start_ts else 0.0
             frames = self.recorded_frames
             frame_count = self.frames_captured_this_session
             self.recorded_frames = []
-            is_active_snapshot = self.is_active
-            buffer_snapshot = self.recorded_frames
+            # Re-read is_active after clearing, for the actual post-state check.
+            is_active_after = self.is_active
 
         reason = "SILENCE TIMEOUT" if timed_out else f"DEACTIVATE (via {source})"
         log(f"{reason} -- duration={duration:.2f}s frames={frame_count} bytes={sum(len(f) for f in frames)}")
 
-        if is_active_snapshot is not False:
+        if is_active_after is not False:
             raise RuntimeError("AUDIO BOUNDARY VIOLATION: is_active still True after deactivate")
-        if len(buffer_snapshot) != 0:
-            raise RuntimeError("AUDIO BOUNDARY VIOLATION: buffer not cleared after deactivate")
+        if self.recorded_frames is buffer_snapshot:
+            raise RuntimeError("AUDIO BOUNDARY VIOLATION: buffer not replaced after deactivate")
         log("Invariant check passed (capture off, buffer cleared).")
 
         if timed_out:
@@ -2062,7 +2365,16 @@ class AudioWorker(threading.Thread):
         threading.Thread(target=self._transcribe_and_report, args=(frames,), daemon=True).start()
 
     def toggle_from_hotkey(self):
-        if not self.is_active:
+        # BUGFIX: this read self.is_active with no lock and then called
+        # _activate/_deactivate based on possibly-stale state -- a narrow
+        # race with a near-simultaneous wake-word toggle or timeout could
+        # silently drop the hotkey press (both branches internally re-check
+        # under the lock and no-op if already in that state, so the failure
+        # mode was "nothing happens," not a crash, but the read should be
+        # consistent with every other state check in this class).
+        with self._state_lock:
+            active = self.is_active
+        if not active:
             self._activate(source="hotkey")
         else:
             self._deactivate(source="hotkey")
@@ -2140,9 +2452,23 @@ class App:
 
         self.settings = load_settings()
 
-        safe_hotkey = get_valid_hotkey(self.settings.get("hotkey_combo"))
+        safe_hotkey = get_valid_hotkey(self.settings.get("hotkey_combo"), fallback=HOTKEY_COMBO_DEFAULT)
         if safe_hotkey != self.settings.get("hotkey_combo"):
             self.settings["hotkey_combo"] = safe_hotkey
+            save_settings(self.settings)
+
+        safe_reveal_hotkey = get_valid_hotkey(self.settings.get("reveal_hotkey_combo"),
+                                               fallback=REVEAL_HOTKEY_COMBO_DEFAULT)
+        if safe_reveal_hotkey != self.settings.get("reveal_hotkey_combo"):
+            self.settings["reveal_hotkey_combo"] = safe_reveal_hotkey
+            save_settings(self.settings)
+        # Two combos can't be identical, or GlobalHotKeys silently drops one
+        # of them -- if the user's saved settings ever collide (e.g. hand-
+        # edited settings.json, or a future settings UI bug), fall back the
+        # reveal hotkey to its default rather than registering a broken pair.
+        if safe_reveal_hotkey == safe_hotkey:
+            safe_reveal_hotkey = REVEAL_HOTKEY_COMBO_DEFAULT
+            self.settings["reveal_hotkey_combo"] = safe_reveal_hotkey
             save_settings(self.settings)
 
         self.history = load_history(self.settings.get("max_history_entries", MAX_HISTORY_ENTRIES_DEFAULT))
@@ -2173,14 +2499,26 @@ class App:
         self.worker.start()
 
         self.hotkey_listener = pynput_keyboard.GlobalHotKeys({
-            self.settings["hotkey_combo"]: self.worker.toggle_from_hotkey,
+            safe_hotkey: self.worker.toggle_from_hotkey,
+            safe_reveal_hotkey: self.reveal_window,
         })
         self.hotkey_listener.start()
-        log(f"Global hotkey active: {self.settings['hotkey_combo']}")
+        log(f"Global hotkey active: {safe_hotkey} (toggle listening), {safe_reveal_hotkey} (reveal window)")
 
         self.settings_window = None
         self.history_window = None
         self.root.after(self.POLL_MS, self.poll_queue)
+
+    def reveal_window(self):
+        # Bring the status window back to a visible size regardless of
+        # whether it's currently Hidden or just buried behind other windows
+        # -- this is the escape hatch for Hidden mode, reachable even when
+        # the window has no visible surface to click on.
+        if self.status_window.size_name == "Hidden":
+            self.change_window_size(DEFAULT_WINDOW_SIZE)
+        self.status_window.top.deiconify()
+        self.status_window.top.lift()
+        self.status_window.top.attributes("-topmost", True)
 
     def open_settings(self):
         if self.settings_window is not None and self.settings_window.top.winfo_exists():
@@ -2212,10 +2550,10 @@ class App:
         self.history_window = HistoryWindow(
             self.root, self.theme, self.history,
             on_rerun=lambda dest, query: open_search(dest, query),
-            on_clear=self.clear_history
+            on_save=self.save_history_now
         )
 
-    def clear_history(self):
+    def save_history_now(self):
         save_history(self.history)
 
     def change_wake_word(self, wake_word):
@@ -2287,6 +2625,18 @@ class App:
     def change_parameters(self, params):
         for key, val in params.items():
             self.settings[key] = val
+
+        # Validate both hotkeys and guard against collisions here too --
+        # this is the only other place combos can change (the Settings UI),
+        # so it needs the same safety checks as the startup path.
+        safe_hotkey = get_valid_hotkey(self.settings.get("hotkey_combo"), fallback=HOTKEY_COMBO_DEFAULT)
+        safe_reveal_hotkey = get_valid_hotkey(self.settings.get("reveal_hotkey_combo"),
+                                               fallback=REVEAL_HOTKEY_COMBO_DEFAULT)
+        if safe_reveal_hotkey == safe_hotkey:
+            safe_reveal_hotkey = REVEAL_HOTKEY_COMBO_DEFAULT
+        self.settings["hotkey_combo"] = safe_hotkey
+        self.settings["reveal_hotkey_combo"] = safe_reveal_hotkey
+
         save_settings(self.settings)
         self.worker.update_parameters(self.settings)
         self.status_window.set_hotkey_label(self.settings["hotkey_combo"])
@@ -2297,10 +2647,11 @@ class App:
 
         self.hotkey_listener.stop()
         self.hotkey_listener = pynput_keyboard.GlobalHotKeys({
-            self.settings["hotkey_combo"]: self.worker.toggle_from_hotkey,
+            safe_hotkey: self.worker.toggle_from_hotkey,
+            safe_reveal_hotkey: self.reveal_window,
         })
         self.hotkey_listener.start()
-        log(f"Hotkey updated to: {self.settings['hotkey_combo']}")
+        log(f"Hotkeys updated: {safe_hotkey} (toggle listening), {safe_reveal_hotkey} (reveal window)")
 
     def add_to_history(self, destination, transcribed, final_query):
         entry = {
@@ -2320,6 +2671,11 @@ class App:
                 self.root.update()
             except Exception as e:
                 log(f"Clipboard copy failed: {e}")
+
+        if is_open_settings_command(payload):
+            self.open_settings()
+            ToastWindow(self.root, self.theme, "Opening settings", kind="success", icon="\u2699")
+            return
 
         if self.settings.get("app_launch_enabled", True):
             app_id = parse_app_command(payload)
@@ -2389,4 +2745,4 @@ class App:
 
 
 if __name__ == "__main__":
-    App().run() 
+    App().run()
